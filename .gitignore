@@ -1,0 +1,54 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+.env/
+.venv/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE settings
+.vscode/
+.idea/
+
+# Data files (usually large)
+data/
+datasets/
+*.csv
+*.h5
+*.nc
+*.zip
+*.tar
+*.gz
+
+# Model files
+*.pkl
+*.joblib
+*.pt
+*.hdf5
+
+# Build files
+build/
+dist/
+
+# Ignore data and generated results
+ocean_gapfill_mc/data/
+ocean_gapfill_mc/outputs/
+
+# (optional) ignore any data/outputs folder anywhere
+data/
+outputs/
+
+# Git
+.git/
