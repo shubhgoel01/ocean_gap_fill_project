@@ -8,9 +8,15 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+import xarray as xr
 from scipy import stats
 
 from .distribution_fit import extract_cell_time_series_samples
+
+try:
+    import cartopy.crs as ccrs
+except ImportError:  # pragma: no cover - optional dependency
+    ccrs = None
 
 # This file generates visual diagnostics for each cell to compare real observed data with fitted statistical models and to summarize key results of the pipeline.
 # In this we generate 
@@ -148,6 +154,9 @@ def create_quicklook_plots(
     uncertainty_stats: dict,
     phase_nan_stats: list[dict],
     fit_summary: dict,
+    raw_data,
+    interpolated_data,
+    final_data,
     config,
 ) -> list[str]:
     """Create simple readable plots from full-dataset results."""
@@ -170,6 +179,99 @@ def create_quicklook_plots(
     model_count_path = plot_model_type_counts(fit_summary, config)
     if model_count_path is not None:
         saved_paths.append(str(model_count_path))
+
+    saved_paths.extend(
+        plot_availability_maps(
+            raw_data=raw_data,
+            interpolated_data=interpolated_data,
+            final_data=final_data,
+            config=config,
+        )
+    )
+
+    return saved_paths
+
+
+def compute_valid_fraction(data: xr.DataArray) -> xr.DataArray:
+    """Return the fraction of valid observations per pixel across time."""
+    if "time" not in data.dims:
+        raise ValueError("Availability maps require a 'time' dimension.")
+
+    valid_fraction = data.notnull().mean(dim="time")
+    valid_fraction.name = "valid_fraction"
+    return valid_fraction
+
+
+def plot_availability_map(data, title: str, output_path: Path) -> Path:
+    """Plot a 2D availability-like map with optional cartopy coastlines."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    map_data = compute_valid_fraction(data) if "time" in data.dims else data
+    map_data = map_data.astype(float)
+
+    figure_kwargs = {"figsize": (9, 5)}
+    subplot_kwargs = {}
+    if ccrs is not None:
+        subplot_kwargs["projection"] = ccrs.PlateCarree()
+
+    fig, ax = plt.subplots(
+        subplot_kw=subplot_kwargs or None,
+        **figure_kwargs,
+    )
+
+    plot_kwargs = {
+        "ax": ax,
+        "x": "lon",
+        "y": "lat",
+        "cmap": "viridis",
+        "vmin": 0.0,
+        "vmax": 1.0,
+        "add_colorbar": True,
+        "cbar_kwargs": {"label": "Valid Data Fraction"},
+    }
+    if ccrs is not None:
+        plot_kwargs["transform"] = ccrs.PlateCarree()
+
+    map_data.plot(**plot_kwargs)
+
+    if ccrs is not None:
+        ax.coastlines(linewidth=0.7)
+
+    ax.set_title(title)
+    ax.set_xlabel("Longitude")
+    ax.set_ylabel("Latitude")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+    return output_path
+
+
+def plot_availability_maps(
+    *,
+    raw_data: xr.DataArray,
+    interpolated_data: xr.DataArray,
+    final_data: xr.DataArray,
+    config,
+) -> list[str]:
+    """Create spatial availability maps for the major pipeline stages."""
+    output_dir = Path(config.plots_dir) / "availability_maps"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    raw_valid_fraction = compute_valid_fraction(raw_data)
+    final_valid_fraction = compute_valid_fraction(final_data)
+    improvement_map = (final_valid_fraction - raw_valid_fraction).clip(min=0.0, max=1.0)
+    improvement_map.name = "availability_improvement"
+
+    plot_specs = [
+        (raw_data, "Raw Data Availability", output_dir / "raw_data_availability.png"),
+        (interpolated_data, "After Interpolation", output_dir / "after_interpolation.png"),
+        (final_data, "After Reconstruction", output_dir / "after_reconstruction.png"),
+        (improvement_map, "Improvement Map", output_dir / "improvement_map.png"),
+    ]
+
+    saved_paths: list[str] = []
+    for data, title, output_path in plot_specs:
+        saved_paths.append(str(plot_availability_map(data, title, output_path)))
 
     return saved_paths
 

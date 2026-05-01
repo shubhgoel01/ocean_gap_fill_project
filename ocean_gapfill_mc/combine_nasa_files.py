@@ -10,10 +10,6 @@ import xarray as xr
 def combine_daily_nasa_files(
     input_dir: str | Path = "data/raw",
     output_file: str | Path = "data/raw/nasa_combined_subset.nc",
-    lat_min: float | None = 20.0,
-    lat_max: float | None = -20.0,
-    lon_min: float | None = 50.0,
-    lon_max: float | None = 100.0,
 ) -> Path:
     """
     Combine daily NASA OceanColor NetCDF files into one time-stacked dataset.
@@ -22,7 +18,7 @@ def combine_daily_nasa_files(
     - Each input file is a single daily 2D map with dims (lat, lon).
     - The date is extracted from the filename, then added as a time dimension.
     - Only the 'chlor_a' variable is kept.
-    - A spatial subset is applied by default to keep the dataset manageable.
+    - No spatial subsetting is applied (assumes data already pre-cropped).
     """
     input_dir = Path(input_dir)
     output_file = Path(output_file)
@@ -50,17 +46,14 @@ def combine_daily_nasa_files(
     # Handle fill values if xarray did not already decode them to NaN
     fill_value = combined["chlor_a"].attrs.get("_FillValue")
     if fill_value is not None:
-        combined["chlor_a"] = combined["chlor_a"].where(combined["chlor_a"] != fill_value)
+        combined["chlor_a"] = combined["chlor_a"].where(
+            combined["chlor_a"] != fill_value
+        )
 
     # Chlorophyll should not be <= 0 for this product in normal use
-    combined["chlor_a"] = combined["chlor_a"].where(combined["chlor_a"] > 0)
-
-    # Crop to a smaller region first so your pipeline does not choke on full global 4km data
-    if None not in (lat_min, lat_max, lon_min, lon_max):
-        combined = combined.sel(
-            lat=slice(lat_min, lat_max),
-            lon=slice(lon_min, lon_max),
-        )
+    combined["chlor_a"] = combined["chlor_a"].where(
+        combined["chlor_a"] > 0
+    )
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
     combined.to_netcdf(output_file)

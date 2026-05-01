@@ -239,6 +239,9 @@ def run_pipeline(config_path: Path) -> None:
             },
         ],
         fit_summary=fit_summary,
+        raw_data=regridded,
+        interpolated_data=interpolated,
+        final_data=reconstructed[0],
         config=config,
     )
 
