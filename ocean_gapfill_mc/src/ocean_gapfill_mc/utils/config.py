@@ -11,12 +11,14 @@ from pathlib import Path
 class AppConfig:
     """Application configuration for the ocean gap-filling pipeline."""
 
-    input_file: str
+    input_directory: Path
     variable_name: str
     latitude_dim: str
     longitude_dim: str
     time_dim: str
     output_directory: str
+    study_area_bounds: dict[str, float] | None = None
+    preprocessed_data_file: Path | None = None
     composite_window_size: int = 8
     composite_min_valid_fraction: float = 0.6
     target_grid_resolution: float = 1.0
@@ -24,7 +26,6 @@ class AppConfig:
     sampled_cell_count: int = 5
     monte_carlo_simulations: int = 10
     ks_pvalue_threshold: float = 0.05
-    save_plots: bool = True
     save_reconstructed_datasets: bool = True
     config_path: str | None = None
     config_directory: str | None = None
@@ -43,12 +44,16 @@ class AppConfig:
         return str(Path(self.output_directory) / "sampled_cells")
 
     @property
+    def reconstructed_dir(self) -> str:
+        return str(Path(self.output_directory) / "reconstructed")
+
+    @property
     def plots_dir(self) -> str:
         return str(Path(self.output_directory) / "plots")
 
     @property
-    def reconstructed_dir(self) -> str:
-        return str(Path(self.output_directory) / "reconstructed")
+    def datasets_dir(self) -> str:
+        return str(Path(self.output_directory) / "datasets")
 
     def output_directories(self) -> list[str]:
         return [
@@ -56,8 +61,9 @@ class AppConfig:
             self.logs_dir,
             self.summaries_dir,
             self.sampled_cells_dir,
-            self.plots_dir,
             self.reconstructed_dir,
+            self.plots_dir,
+            self.datasets_dir,
         ]
 
 
@@ -72,7 +78,7 @@ def load_config(config_path: Path) -> AppConfig:
 def validate_config(raw_config: dict, config_path: Path | None = None) -> AppConfig:
     """Validate required fields and basic value ranges."""
     required_fields = [
-        "input_file",
+        "input_directory",
         "variable_name",
         "latitude_dim",
         "longitude_dim",
@@ -94,10 +100,20 @@ def validate_config(raw_config: dict, config_path: Path | None = None) -> AppCon
     )
 
     # Normalize config-defined paths once during loading so the rest of the application can use config values without depending where we are running from.
-    for field_name in ("input_file", "output_directory"):
-        normalized_config[field_name] = str(
-            _resolve_config_path(normalized_config[field_name], config_base_dir)
+    normalized_config["input_directory"] = _resolve_config_path(
+        normalized_config["input_directory"],
+        config_base_dir,
+    )
+    normalized_config["output_directory"] = str(
+        _resolve_config_path(normalized_config["output_directory"], config_base_dir)
+    )
+    if normalized_config.get("preprocessed_data_file"):
+        normalized_config["preprocessed_data_file"] = _resolve_config_path(
+            normalized_config["preprocessed_data_file"],
+            config_base_dir,
         )
+    else:
+        normalized_config["preprocessed_data_file"] = None
 
     normalized_config["config_path"] = (
         str(Path(config_path).expanduser().resolve()) if config_path is not None else None
@@ -106,12 +122,14 @@ def validate_config(raw_config: dict, config_path: Path | None = None) -> AppCon
 
     # Convert dict → structured object
     config = AppConfig(**normalized_config)                 
-    _validate_non_empty_string(config.input_file, "input_file")
+    if config.preprocessed_data_file is None:
+        _validate_existing_directory(config.input_directory, "input_directory")
     _validate_non_empty_string(config.variable_name, "variable_name")
     _validate_non_empty_string(config.latitude_dim, "latitude_dim")
     _validate_non_empty_string(config.longitude_dim, "longitude_dim")
     _validate_non_empty_string(config.time_dim, "time_dim")
     _validate_non_empty_string(config.output_directory, "output_directory")
+    _validate_study_area_bounds(config.study_area_bounds)
 
     # Value validation for numeric fields, helps avoid mistakes like "monte_carlo_simulations": -5, "monte_carlo_simulations": -5
     if config.composite_window_size <= 0:
@@ -134,6 +152,56 @@ def _validate_non_empty_string(value: str, field_name: str) -> None:
     """Ensure a config value is a non-empty string."""
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field_name} must be a non-empty string.")
+
+
+def _validate_existing_directory(value: Path, field_name: str) -> None:
+    """Ensure a config path points to an existing directory."""
+    if not isinstance(value, Path):
+        raise ValueError(f"{field_name} must be a pathlib.Path.")
+    if not value.exists():
+        raise FileNotFoundError(f"{field_name} does not exist: {value}")
+    if not value.is_dir():
+        raise NotADirectoryError(f"{field_name} is not a directory: {value}")
+
+
+def _validate_study_area_bounds(bounds: dict[str, float] | None) -> None:
+    if bounds is None:
+        return
+
+    required_keys = {
+        "latitude_min",
+        "latitude_max",
+        "longitude_min",
+        "longitude_max",
+    }
+    missing_keys = sorted(required_keys.difference(bounds))
+    if missing_keys:
+        joined = ", ".join(missing_keys)
+        raise ValueError(f"study_area_bounds is missing required keys: {joined}")
+
+    latitude_min = _coerce_float(bounds["latitude_min"], "study_area_bounds.latitude_min")
+    latitude_max = _coerce_float(bounds["latitude_max"], "study_area_bounds.latitude_max")
+    longitude_min = _coerce_float(bounds["longitude_min"], "study_area_bounds.longitude_min")
+    longitude_max = _coerce_float(bounds["longitude_max"], "study_area_bounds.longitude_max")
+
+    if not -90.0 <= latitude_min < latitude_max <= 90.0:
+        raise ValueError("study_area_bounds latitude values must satisfy -90 <= min < max <= 90.")
+    if not -180.0 <= longitude_min < longitude_max <= 360.0:
+        raise ValueError(
+            "study_area_bounds longitude values must satisfy -180 <= min < max <= 360."
+        )
+
+    bounds["latitude_min"] = latitude_min
+    bounds["latitude_max"] = latitude_max
+    bounds["longitude_min"] = longitude_min
+    bounds["longitude_max"] = longitude_max
+
+
+def _coerce_float(value, field_name: str) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be numeric.") from exc
 
 
 def _resolve_config_path(path_value: str, config_base_dir: Path) -> Path:

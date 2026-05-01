@@ -5,9 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
@@ -17,7 +14,6 @@ def inspect_phase1_dataset(
     label: str,
     config,
     save_outputs: bool = True,
-    save_plot: bool | None = None,
 ) -> dict:
     """Inspect a processed DataArray and save presentation-ready summaries.
 
@@ -32,9 +28,6 @@ def inspect_phase1_dataset(
         Application config object.
     save_outputs:
         If True, save JSON and text summaries.
-    save_plot:
-        If True, save a NaN percentage over time plot. If None, it follows
-        `config.save_plots`.
     """
     validate_inspection_input(data_array)
 
@@ -71,15 +64,6 @@ def inspect_phase1_dataset(
         save_inspection_json(summary, Path(config.summaries_dir), label)
         save_inspection_report(summary, Path(config.summaries_dir), label)
 
-    should_save_plot = config.save_plots if save_plot is None else save_plot
-    if should_save_plot:
-        plot_nan_percent_over_time(
-            time_values,
-            nan_percent_per_time,
-            Path(config.plots_dir),
-            label,
-        )
-
     return summary
 
 
@@ -96,23 +80,16 @@ def validate_inspection_input(data_array: xr.DataArray) -> None:
 
 def compute_nan_percent_per_time(data_array: xr.DataArray) -> list[dict]:
     """Compute NaN percentage for each time slice."""
-    results: list[dict] = []
+    nan_mask = np.isnan(data_array.values)
+    nan_percent_values = nan_mask.mean(axis=(1, 2)) * 100.0
 
-    for time_value in data_array["time"].values:
-        time_slice = data_array.sel(time=time_value)
-        slice_values = time_slice.values
-        total_cells = int(slice_values.size)
-        nan_cells = int(np.isnan(slice_values).sum())
-        nan_percent = float((nan_cells / total_cells) * 100.0) if total_cells else 0.0
-
-        results.append(
-            {
-                "time": str(time_value),
-                "nan_percent": round(nan_percent, 4),
-            }
-        )
-
-    return results
+    return [
+        {
+            "time": str(time_value),
+            "nan_percent": round(float(nan_percent), 4),
+        }
+        for time_value, nan_percent in zip(data_array["time"].values, nan_percent_values)
+    ]
 
 
 def save_inspection_json(summary: dict, summaries_dir: Path, label: str) -> Path:
@@ -153,32 +130,5 @@ def save_inspection_report(summary: dict, summaries_dir: Path, label: str) -> Pa
 
     with output_path.open("w", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
-
-    return output_path
-
-
-def plot_nan_percent_over_time(
-    time_values: np.ndarray,
-    nan_percent_per_time: list[dict],
-    plots_dir: Path,
-    label: str,
-) -> Path:
-    """Plot NaN percentage over time using true datetime-like coordinates."""
-    plots_dir.mkdir(parents=True, exist_ok=True)
-    output_path = plots_dir / f"{label}_nan_percent_over_time.png"
-
-    nan_values = [item["nan_percent"] for item in nan_percent_per_time]
-
-    fig, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(time_values, nan_values, color="#1f6f8b", linewidth=1.8)
-    ax.set_title("NaN Percentage Over Time")
-    ax.set_xlabel("Time")
-    ax.set_ylabel("NaN Percentage (%)")
-    ax.grid(True, alpha=0.3)
-    fig.autofmt_xdate()
-    ax.tick_params(axis="x", rotation=45)
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
-    plt.close(fig)
 
     return output_path

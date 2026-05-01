@@ -60,11 +60,11 @@ def validate_spatial_dimensions(data_array: xr.DataArray) -> None:
 
 def prepare_spatial_coordinates(data_array: xr.DataArray) -> xr.DataArray:
     prepared = data_array
-    # But interpolation usually works best when coordinates are increasing: So here we are sorting in increasing order This ensures that the interpolation will be performed correctly.
+    # Keep coordinates increasing without the large copy that xarray.sortby can trigger.
     if prepared["lat"].size > 1 and prepared["lat"].values[0] > prepared["lat"].values[-1]:
-        prepared = prepared.sortby("lat")
+        prepared = prepared.isel(lat=slice(None, None, -1))
     if prepared["lon"].size > 1 and prepared["lon"].values[0] > prepared["lon"].values[-1]:
-        prepared = prepared.sortby("lon")
+        prepared = prepared.isel(lon=slice(None, None, -1))
     return prepared
 
 

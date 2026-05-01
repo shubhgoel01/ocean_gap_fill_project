@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 
 import numpy as np
 import xarray as xr
 from scipy import stats
+from sklearn.model_selection import GridSearchCV
+from sklearn.neighbors import KernelDensity
 
 
 MIN_PARAMETRIC_SAMPLE_SIZE = 5
@@ -20,10 +23,18 @@ def fit_all_missing_cell_distributions(
     validate_distribution_input(data_array)
 
     missing_cells = find_missing_cells(data_array)
+    grid_fit_cache = {}
     results = []
     for cell in missing_cells:
-        sample_values = extract_cell_time_series_samples(data_array, cell)
-        results.append(fit_models_for_cell(cell, sample_values, config.ks_pvalue_threshold))
+        grid_key = make_grid_cell_key(cell)
+        if grid_key not in grid_fit_cache:
+            sample_values = extract_cell_time_series_samples(data_array, cell)
+            grid_fit_cache[grid_key] = fit_models_for_cell(
+                cell,
+                sample_values,
+                config.ks_pvalue_threshold,
+            )
+        results.append(build_cell_fit_result(grid_fit_cache[grid_key], cell))
 
     summary = summarize_full_fit_results(results)
     unresolved_cells = extract_unresolved_cells(results)
@@ -63,25 +74,6 @@ def extract_selected_fit_results(
         save_distribution_results(filtered, output_dir / "selected_debug_cell_model_fits.json")
 
     return filtered
-
-# As of now, i do not think there is some use of this function.
-def fit_selected_cell_distributions(
-    data_array: xr.DataArray,
-    selected_cells: list[dict],
-    config,
-    save_results: bool = True,
-) -> list[dict]:
-    full_outputs = fit_all_missing_cell_distributions(
-        data_array,
-        config,
-        save_results=save_results,
-    )
-    output_dir = Path(config.sampled_cells_dir) if save_results else None
-    return extract_selected_fit_results(
-        full_outputs["fit_results"],
-        selected_cells,
-        output_dir=output_dir,
-    )
 
 # Check if data has three dimensions
 def validate_distribution_input(data_array: xr.DataArray) -> None:
@@ -142,6 +134,27 @@ def make_cell_key(cell: dict) -> tuple[int, int, int]:
         int(cell["lon_index"]),
     )
 
+
+def make_grid_cell_key(cell: dict) -> tuple[int, int]:
+    return (
+        int(cell["lat_index"]),
+        int(cell["lon_index"]),
+    )
+
+
+def build_cell_fit_result(cached_fit_result: dict, cell: dict) -> dict:
+    result = copy.deepcopy(cached_fit_result)
+    result["cell"] = {
+        "time_index": int(cell["time_index"]),
+        "time_value": str(cell["time_value"]),
+        "lat_index": int(cell["lat_index"]),
+        "lat_value": float(cell["lat_value"]),
+        "lon_index": int(cell["lon_index"]),
+        "lon_value": float(cell["lon_value"]),
+    }
+    return result
+
+
 # This fucntion takes (lon, lat) values of a missing cell and takes values for all time steps, means if some cell at particular (lat, lon) is missing, it extracts all values at that (lat, lon) across all time steps, and then filters out the valid values (non-NaN) to create a sample for distribution fitting. 
 # This sample is then used to fit different distributions and find the best fit for that missing cell.
 def extract_cell_time_series_samples(data_array: xr.DataArray, cell: dict) -> np.ndarray:
@@ -168,7 +181,6 @@ def fit_models_for_cell(cell: dict, sample_values: np.ndarray, pvalue_threshold:
             "lon_value": float(cell["lon_value"]),
         },
         "sample_size": sample_size,
-        "observed_values": [float(value) for value in sample_values.tolist()],
         "candidate_model_statistics": {},
         "chosen_model": None,
         "chosen_p_value": None,
@@ -445,12 +457,20 @@ def finalize_with_kde_status(result: dict, sample_values: np.ndarray) -> dict:
 # Check whether KDE can be used as fallback or not.
 def evaluate_kde_availability(sample_values: np.ndarray) -> dict:
     """Check whether KDE can be used later for sampling."""
+    sample_values = np.asarray(sample_values, dtype=float)
+    sample_values = sample_values[np.isfinite(sample_values)]
     unique_values = np.unique(sample_values)
     if sample_values.size < 2:
         return {
             "status": "failed",
             "sample_size": int(sample_values.size),
             "reason": "insufficient_sample_size_for_kde",
+        }
+    if sample_values.size < 5:
+        return {
+            "status": "failed",
+            "sample_size": int(sample_values.size),
+            "reason": "insufficient_sample_size_for_5_fold_kde_cv",
         }
     if unique_values.size < 2:
         return {
@@ -460,7 +480,8 @@ def evaluate_kde_availability(sample_values: np.ndarray) -> dict:
         }
 
     try:
-        stats.gaussian_kde(sample_values)
+        bandwidth = select_kde_bandwidth(sample_values)
+        stats.gaussian_kde(sample_values, bw_method=make_gaussian_kde_bw_method(sample_values, bandwidth))
     except Exception as exc:
         return {
             "status": "failed",
@@ -471,7 +492,30 @@ def evaluate_kde_availability(sample_values: np.ndarray) -> dict:
     return {
         "status": "ok",
         "sample_size": int(sample_values.size),
+        "bandwidth": float(bandwidth),
     }
+
+
+def select_kde_bandwidth(sample_values: np.ndarray) -> float:
+    sample_values = np.asarray(sample_values, dtype=float)
+    sample_values = sample_values[np.isfinite(sample_values)].reshape(-1, 1)
+    bandwidth_grid = np.logspace(-2, 1, 50)
+    search = GridSearchCV(
+        KernelDensity(kernel="gaussian"),
+        {"bandwidth": bandwidth_grid},
+        cv=5,
+    )
+    search.fit(sample_values)
+    return float(search.best_params_["bandwidth"])
+
+
+def make_gaussian_kde_bw_method(sample_values: np.ndarray, bandwidth: float) -> float:
+    sample_values = np.asarray(sample_values, dtype=float)
+    sample_values = sample_values[np.isfinite(sample_values)]
+    sample_std = float(np.std(sample_values, ddof=1))
+    if not np.isfinite(sample_std) or sample_std <= 0:
+        raise ValueError("Cannot convert KDE bandwidth for zero-variance sample values.")
+    return float(bandwidth) / sample_std
 
 
 def save_distribution_results(results: list[dict], output_path: Path) -> Path:

@@ -40,6 +40,12 @@ def calculate_uncertainty_statistics(
     std_map = np.nanstd(stacked, axis=0, ddof=0)
     p05_map = np.nanpercentile(stacked, 5, axis=0)
     p95_map = np.nanpercentile(stacked, 95, axis=0)
+    mean_data_array = xr.DataArray(
+        mean_map,
+        coords=post_interpolation_data.coords,
+        dims=post_interpolation_data.dims,
+        name="reconstructed_mean",
+    )
 
     final_nan_count = int(np.isnan(mean_map).sum())
     selected_cell_summary = extract_selected_cell_uncertainty_summary(
@@ -84,6 +90,7 @@ def calculate_uncertainty_statistics(
     return {
         "summary": summary,
         "selected_cell_summary": selected_cell_summary,
+        "mean_map": mean_data_array,
     }
 
 

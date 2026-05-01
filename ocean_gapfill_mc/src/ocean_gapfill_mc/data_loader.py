@@ -1,72 +1,154 @@
-"""NetCDF data loading utilities for chlorophyll datasets.
-
-This module focuses on one job: opening a NetCDF file with xarray,
-as the NetCDF file may contain many variables, picks the required chlorophyll variable, cleans its dimension names, validates it, and returns that single variable as a DataArray.
-"""
+"""ESA OC-CCI chlorophyll data loading utilities."""
 
 from __future__ import annotations
 
-from pathlib import Path 
+from pathlib import Path
 
-import pandas as pd 
+import numpy as np
+import pandas as pd
 import xarray as xr
 
-# read input path from config => check file exists => open netcdf with xarray => check that required chlorophyll variable exists => extract that variable => standardize dimension names => ensure time is datetime => validate required dimensions => print metadata summary => return DataArray
+
+ESA_OC_CCI_PATTERN = "ESACCI-OC-L3S-CHLOR_A-MERGED-8D_DAILY_4km_GEO_PML_*.nc"
+DEFAULT_CHLOROPHYLL_VARIABLE = "chlor_a"
+
 
 def load_chlorophyll_data(config) -> xr.DataArray:
+    preprocessed_path = getattr(config, "preprocessed_data_file", None)
+    if preprocessed_path:
+        return load_preprocessed_chlorophyll_data(config)
 
-    input_path = Path(config.input_file)
-    if not input_path.exists():
-        raise FileNotFoundError(f"Input NetCDF file not found: {input_path}")
+    return load_raw_chlorophyll_data(config)
+
+
+def load_raw_chlorophyll_data(config) -> xr.DataArray:
+    """Load raw multi-file chlorophyll data and crop it to the study domain."""
+    input_dir = Path(config.input_directory)
+    if not input_dir.exists():
+        raise FileNotFoundError(f"Input NetCDF directory not found: {input_dir}")
+    if not input_dir.is_dir():
+        raise NotADirectoryError(f"Input NetCDF path is not a directory: {input_dir}")
+
+    file_pattern = str(input_dir / ESA_OC_CCI_PATTERN)
 
     try:
-        dataset = xr.open_dataset(input_path)
+        dataset = xr.open_mfdataset(
+            file_pattern,
+            combine="by_coords",
+            data_vars="minimal",
+            coords="minimal",
+            compat="override",
+            chunks={"time": 1},
+        )
     except Exception as exc:
-        raise ValueError(f"Failed to open NetCDF file: {input_path}") from exc
+        raise ValueError(f"Failed to open ESA OC-CCI NetCDF files: {file_pattern}") from exc
 
-    if config.variable_name not in dataset.data_vars:
+    variable_name = getattr(config, "variable_name", DEFAULT_CHLOROPHYLL_VARIABLE)
+    if variable_name not in dataset.data_vars:
         available = ", ".join(dataset.data_vars) or "none"
         raise ValueError(
             "Chlorophyll variable "
-            f"'{config.variable_name}' was not found in {input_path}. "
+            f"'{variable_name}' was not found in {input_dir}. "
             f"Available variables: {available}"
         )
 
-    chlorophyll = dataset[config.variable_name]
-    chlorophyll = standardize_dimension_names(chlorophyll, config)
+    chlorophyll = dataset[variable_name]
     chlorophyll = ensure_datetime_time(chlorophyll)
+    chlorophyll = crop_to_study_area(chlorophyll, config)
     validate_required_dimensions(chlorophyll)
-    print_basic_metadata(chlorophyll, input_path)
+    print_basic_metadata(chlorophyll, input_dir)
     return chlorophyll
 
 
-# This function converts whatever dimension names your raw file uses into the standard names: time, lat, lon which are later used in rest of the pipeline. It checks if any dimension exist with the name stated in the config and then compares its name with the standard name. If they are different, it renames that dimension to the standard name. 
-# So from now onwards, the rest of the pipeline uses statndard dimension names : time, lat, lon. 
-def standardize_dimension_names(data_array: xr.DataArray, config) -> xr.DataArray:
-    rename_map: dict[str, str] = {}
+def load_preprocessed_chlorophyll_data(config) -> xr.DataArray:
+    """Load a previously merged and cropped chlorophyll NetCDF file."""
+    preprocessed_path = Path(config.preprocessed_data_file)
+    if not preprocessed_path.exists():
+        raise FileNotFoundError(
+            f"Preprocessed NetCDF file not found: {preprocessed_path}. "
+            "Run scripts/preprocess_data.py first or remove preprocessed_data_file "
+            "from the config to load raw files directly."
+        )
+    if not preprocessed_path.is_file():
+        raise ValueError(f"Preprocessed NetCDF path is not a file: {preprocessed_path}")
 
-    if config.time_dim in data_array.dims and config.time_dim != "time":
-        rename_map[config.time_dim] = "time"
-    if config.latitude_dim in data_array.dims and config.latitude_dim != "lat":
-        rename_map[config.latitude_dim] = "lat"
-    if config.longitude_dim in data_array.dims and config.longitude_dim != "lon":
-        rename_map[config.longitude_dim] = "lon"
+    try:
+        dataset = xr.open_dataset(preprocessed_path)
+    except Exception as exc:
+        raise ValueError(f"Failed to open preprocessed NetCDF file: {preprocessed_path}") from exc
 
-    if rename_map:
-        data_array = data_array.rename(rename_map)
+    variable_name = getattr(config, "variable_name", DEFAULT_CHLOROPHYLL_VARIABLE)
+    if variable_name not in dataset.data_vars:
+        available = ", ".join(dataset.data_vars) or "none"
+        raise ValueError(
+            "Chlorophyll variable "
+            f"'{variable_name}' was not found in {preprocessed_path}. "
+            f"Available variables: {available}"
+        )
 
-    coord_rename_map: dict[str, str] = {}
-    if config.time_dim in data_array.coords and config.time_dim != "time":
-        coord_rename_map[config.time_dim] = "time"
-    if config.latitude_dim in data_array.coords and config.latitude_dim != "lat":
-        coord_rename_map[config.latitude_dim] = "lat"
-    if config.longitude_dim in data_array.coords and config.longitude_dim != "lon":
-        coord_rename_map[config.longitude_dim] = "lon"
+    chlorophyll = dataset[variable_name]
+    chlorophyll = ensure_datetime_time(chlorophyll)
+    validate_required_dimensions(chlorophyll)
+    print_basic_metadata(chlorophyll, preprocessed_path)
+    return chlorophyll
 
-    if coord_rename_map:
-        data_array = data_array.rename(coord_rename_map)
 
-    return data_array
+def crop_to_study_area(data_array: xr.DataArray, config) -> xr.DataArray:
+    """Crop a DataArray to the configured study-area domain."""
+    bounds = get_study_area_bounds(config)
+    cropped = data_array.sel(
+        lat=coordinate_order_aware_slice(
+            data_array["lat"],
+            bounds["latitude_min"],
+            bounds["latitude_max"],
+        ),
+        lon=coordinate_order_aware_slice(
+            data_array["lon"],
+            bounds["longitude_min"],
+            bounds["longitude_max"],
+        ),
+    )
+    print(
+        "Cropped to study area "
+        f"lat {bounds['latitude_min']} to {bounds['latitude_max']}, "
+        f"lon {bounds['longitude_min']} to {bounds['longitude_max']}; "
+        f"shape: {dict(cropped.sizes)}"
+    )
+    return cropped
+
+
+def crop_to_tropical_indian_ocean(data_array: xr.DataArray) -> xr.DataArray:
+    """Crop a DataArray to the default tropical Indian Ocean domain."""
+    class DefaultConfig:
+        study_area_bounds = default_study_area_bounds()
+
+    return crop_to_study_area(data_array, DefaultConfig())
+
+
+def get_study_area_bounds(config) -> dict[str, float]:
+    bounds = getattr(config, "study_area_bounds", None) or default_study_area_bounds()
+    return {
+        "latitude_min": float(bounds["latitude_min"]),
+        "latitude_max": float(bounds["latitude_max"]),
+        "longitude_min": float(bounds["longitude_min"]),
+        "longitude_max": float(bounds["longitude_max"]),
+    }
+
+
+def default_study_area_bounds() -> dict[str, float]:
+    return {
+        "latitude_min": -30.0,
+        "latitude_max": 30.0,
+        "longitude_min": 40.0,
+        "longitude_max": 120.0,
+    }
+
+
+def coordinate_order_aware_slice(coordinate: xr.DataArray, lower: float, upper: float) -> slice:
+    values = np.asarray(coordinate.values, dtype=float)
+    if values.size == 0 or values[0] <= values[-1]:
+        return slice(lower, upper)
+    return slice(upper, lower)
 
 
 # because raw data is downloaded from NASA website on daily basis and then merged, it becomes important time coordinate exists and is converted into proper datetime format.

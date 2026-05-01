@@ -1,10 +1,17 @@
 {
-  "input_file": "../data/raw/nasa_combined_subset.nc",
+  "input_directory": "../data/raw",
   "variable_name": "chlor_a",
   "latitude_dim": "lat",
   "longitude_dim": "lon",
   "time_dim": "time",
+  "study_area_bounds": {
+    "latitude_min": -30.0,
+    "latitude_max": 30.0,
+    "longitude_min": 40.0,
+    "longitude_max": 120.0
+  },
   "output_directory": "../outputs",
+  "preprocessed_data_file": "../data/processed/tropical_indian_ocean_chlor_a.nc",
   "composite_window_size": 8,
   "composite_min_valid_fraction": 0.2,
   "target_grid_resolution": 1.0,
@@ -12,6 +19,5 @@
   "sampled_cell_count": 5,
   "monte_carlo_simulations": 100,
   "ks_pvalue_threshold": 0.05,
-  "save_plots": true,
   "save_reconstructed_datasets": true
 }

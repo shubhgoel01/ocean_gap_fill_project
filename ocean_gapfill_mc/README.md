@@ -13,7 +13,7 @@ Modular Python pipeline for ocean chlorophyll gap filling using:
 This project processes daily chlorophyll data and reconstructs values that remain missing after interpolation.
 
 Important design point:
-- The selected 4-5 debug cells are used only for reporting, plotting, and inspection.
+- The selected 4-5 debug cells are used only for reporting and inspection.
 - Model fitting, Monte Carlo reconstruction, and uncertainty estimation are performed on the whole dataset.
 
 ## Pipeline Overview
@@ -21,8 +21,8 @@ Important design point:
 The main processing flow is:
 
 1. load configuration
-2. load daily chlorophyll data from NetCDF
-3. convert daily data to 8-day composites
+2. load prepared chlorophyll data from NetCDF
+3. use the stored tropical Indian Ocean 8-day composite dataset
 4. regrid data to a 1-degree latitude-longitude grid
 5. inspect dataset shape and missing-data coverage
 6. apply ordered interpolation:
@@ -37,15 +37,18 @@ The main processing flow is:
 12. build an ensemble of reconstructed datasets
 13. compute full-dataset uncertainty maps
 14. extract selected-cell Monte Carlo and uncertainty summaries
-15. save outputs, plots, summaries, and logs
+15. save outputs, summaries, and logs
 
 ## Phase Descriptions
 
 `Phase 1: Preprocessing`
-- Load the source dataset.
-- Convert daily observations into 8-day composites.
+- Load the prepared source dataset.
 - Regrid the data to a common 1-degree grid.
 - Inspect dataset shape and NaN percentage.
+
+Raw multi-file merge and tropical Indian Ocean cropping are handled once by
+`scripts/preprocess_data.py`, then reused by the main pipeline. The crop bounds
+are configured in `configs/default.json` under `study_area_bounds`.
 
 `Phase 2: Interpolation`
 - Apply explicit neighbor-based interpolation in the required order:
@@ -76,13 +79,11 @@ The main processing flow is:
   - 95th percentile
 - Extract readable uncertainty summaries for selected debug cells.
 
-`Phase 6: Reporting and Visualization`
+`Phase 6: Reporting`
 - Selected debug cells are used only to:
   - show model-fit details
   - show Monte Carlo sample summaries
   - show uncertainty summaries
-  - generate compact diagnostic plots
-- Whole-dataset summary plots are also generated.
 
 ## Selected Debug Cells
 
@@ -112,13 +113,6 @@ They exist only to make the full-dataset results easier to inspect.
 - selected-cell Monte Carlo summaries
 - selected-cell uncertainty summaries
 
-`outputs/plots/`
-- selected-cell distribution plots
-- selected-cell Monte Carlo plots
-- selected-cell uncertainty plots
-- whole-dataset NaN progression plot
-- whole-dataset model-count summary plot
-
 `outputs/reconstructed/`
 - reconstructed ensemble datasets
 - full uncertainty maps in NetCDF
@@ -145,14 +139,19 @@ They exist only to make the full-dataset results easier to inspect.
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
+python scripts/preprocess_data.py --config configs/default.json
 python scripts/main.py --config configs/default.json
 ```
+
+The preprocessing command reads the raw files from `input_directory`, crops the
+data using `study_area_bounds`, and writes the NetCDF path configured as
+`preprocessed_data_file`.
 
 ## Project Layout
 
 - `configs/`: JSON configuration files
 - `data/raw/`: source input files
 - `data/processed/`: intermediate processed outputs
-- `outputs/`: logs, summaries, plots, sampled-cell reports, reconstructed datasets
+- `outputs/`: logs, summaries, sampled-cell reports, reconstructed datasets
 - `scripts/main.py`: command-line entrypoint
 - `src/ocean_gapfill_mc/`: pipeline source code

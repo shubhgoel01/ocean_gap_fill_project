@@ -4,13 +4,21 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 from pathlib import Path
 
 import numpy as np
 import xarray as xr
 from scipy import stats
 
-from .distribution_fit import make_cell_key
+from .distribution_fit import (
+    extract_cell_time_series_samples,
+    make_cell_key,
+    make_gaussian_kde_bw_method,
+)
+
+
+logger = logging.getLogger(__name__)
 
 # take the dataset after earlier steps => take fitted probability models for remaining missing cells => generate multiple possible values for each missing cell => create multiple reconstructed datasets => save summaries/results if needed
 def run_full_dataset_monte_carlo(
@@ -39,7 +47,10 @@ def run_full_dataset_monte_carlo(
         cell_seed = int(base_rng.integers(0, 2**32 - 1)) + index
 
         # Now, suppose simulation count = 10, then this function returns random '10' values for that cell based of the fit-distribution.
-        sampled_values = simulate_for_cell(fit_result, simulation_count, cell_seed) 
+        sample_values = None
+        if fit_result.get("chosen_model") == "kde":
+            sample_values = extract_cell_time_series_samples(data_array, fit_result["cell"])
+        sampled_values = simulate_for_cell(fit_result, simulation_count, cell_seed, sample_values) 
         # Tales a dictionary and returns the tuple.
         cell_key = make_cell_key(fit_result["cell"])
 
@@ -91,7 +102,12 @@ def initialize_reconstruction_arrays(
     return [base_values.copy() for _ in range(simulation_count)]
 
 # This function generates Monte Carlo samples for one missing cell using the model that was chosen earlier in distribution_fit.py
-def simulate_for_cell(fit_result: dict, simulation_count: int, seed: int) -> np.ndarray:
+def simulate_for_cell(
+    fit_result: dict,
+    simulation_count: int,
+    seed: int,
+    sample_values: np.ndarray | None = None,
+) -> np.ndarray:
     # Read model information, which model to use, and parameters of that chosen model.
     chosen_model = fit_result.get("chosen_model")
     candidate_stats = fit_result.get("candidate_model_statistics", {})
@@ -125,7 +141,7 @@ def simulate_for_cell(fit_result: dict, simulation_count: int, seed: int) -> np.
             random_state=rng,
         )
     elif chosen_model == "kde":
-        samples = simulate_from_kde(fit_result, simulation_count, rng)
+        samples = simulate_from_kde(fit_result, simulation_count, rng, sample_values)
     else:
         samples = np.full(simulation_count, np.nan, dtype=float)
 
@@ -134,17 +150,34 @@ def simulate_for_cell(fit_result: dict, simulation_count: int, seed: int) -> np.
     return enforce_non_negative_samples(samples)
 
 # This function generates Monte Carlo samples for one cell when the chosen model is KDE instead of normal/lognormal/gamma
-def simulate_from_kde(fit_result: dict, simulation_count: int, rng: np.random.Generator) -> np.ndarray:
+def simulate_from_kde(
+    fit_result: dict,
+    simulation_count: int,
+    rng: np.random.Generator,
+    sample_values: np.ndarray | None,
+) -> np.ndarray:
     # First check KDE status (resolved or not) for current cell, if not resolved instantly return all NaN
     kde_status = fit_result.get("candidate_model_statistics", {}).get("kde", {})
     if kde_status.get("status") != "ok":
         return np.full(simulation_count, np.nan, dtype=float)
 
-    sample_values = np.asarray(fit_result.get("observed_values", []), dtype=float)
+    sample_values = np.asarray(sample_values if sample_values is not None else [], dtype=float)
+    sample_values = sample_values[np.isfinite(sample_values)]
     if sample_values.size < 2:
         return np.full(simulation_count, np.nan, dtype=float)
 
-    kde = stats.gaussian_kde(sample_values)
+    bandwidth = kde_status.get("bandwidth")
+    if bandwidth is None:
+        logger.warning(
+            "KDE fit result for cell %s is missing a bandwidth; falling back to Scott's rule.",
+            fit_result.get("cell"),
+        )
+        kde = stats.gaussian_kde(sample_values)
+    else:
+        kde = stats.gaussian_kde(
+            sample_values,
+            bw_method=make_gaussian_kde_bw_method(sample_values, float(bandwidth)),
+        )
     sampled = kde.resample(simulation_count, seed=rng)
     return np.asarray(sampled).reshape(-1)
 
