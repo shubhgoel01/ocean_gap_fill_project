@@ -80,7 +80,8 @@ def run_full_dataset_monte_carlo(
 
     # Save selected cell summaries, unresolved warnings, run summary, reconstructed datasets.
     if save_results:
-        save_selected_monte_carlo_results(selected_cell_summaries, Path(config.sampled_cells_dir))
+        if selected_cells:
+            save_selected_monte_carlo_results(selected_cell_summaries, Path(config.sampled_cells_dir))
         save_unresolved_warnings(unresolved_cells, Path(config.summaries_dir))
         save_monte_carlo_run_summary(run_summary, Path(config.summaries_dir))
         if config.save_reconstructed_datasets:

@@ -201,14 +201,15 @@ def save_uncertainty_outputs(
     with (summaries_dir / "uncertainty_summary.json").open("w", encoding="utf-8") as handle:
         json.dump(summary, handle, indent=2)
 
-    save_selected_cell_summary_json(
-        selected_cell_summary,
-        sampled_dir / "selected_cell_uncertainty.json",
-    )
-    save_selected_cell_summary_csv(
-        selected_cell_summary,
-        sampled_dir / "selected_cell_uncertainty.csv",
-    )
+    if selected_cell_summary:
+        save_selected_cell_summary_json(
+            selected_cell_summary,
+            sampled_dir / "selected_cell_uncertainty.json",
+        )
+        save_selected_cell_summary_csv(
+            selected_cell_summary,
+            sampled_dir / "selected_cell_uncertainty.csv",
+        )
 
 
 def save_selected_cell_summary_json(results: list[dict], output_path: Path) -> Path:

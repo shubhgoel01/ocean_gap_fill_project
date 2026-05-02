@@ -18,7 +18,7 @@ from .inspect_dataset import inspect_phase1_dataset
 from .interpolation import apply_ordered_interpolation
 from .monte_carlo import run_full_dataset_monte_carlo
 from .plotting import generate_pipeline_plots, save_pipeline_chlorophyll_datasets
-from .select_cells import select_debug_cells
+from .select_cells import select_monte_carlo_filled_debug_cells
 from .spatial_regrid import regrid_to_target_latlon
 from .uncertainty import calculate_uncertainty_statistics
 from .utils.config import load_config
@@ -136,41 +136,43 @@ def run_pipeline(config_path: Path) -> None:
         config=config,
     )
 
-# A small number of representative cells are selected for detailed reporting only.
-
-    logger.info("Step 6/13: selecting debug cells for reporting only")
-    sampled_cells = select_debug_cells(interpolated, config)
-
 # Now after interpolation, fit-probability-distributions is identified for all remaining missing (NaN) cells.
 
-    logger.info("Step 7/13: fitting probability models for all remaining missing cells")
+    logger.info("Step 6/13: fitting probability models for all remaining missing cells")
     fit_outputs = fit_all_missing_cell_distributions(interpolated, config)
     fitted_models = fit_outputs["fit_results"]
     fit_summary = fit_outputs["summary"]
     unresolved_cells = fit_outputs["unresolved_cells"]
 
-# Extracts the fit-results for the selected cells.
-
-    logger.info("Step 8/13: extracting model-fit summaries for selected debug cells")
-    selected_fit_results = extract_selected_fit_results(
-        fitted_models,
-        sampled_cells,
-        output_dir=Path(config.sampled_cells_dir),
-    )
-
 # Now run monte_carlo reconstruction for the full dataset, using the fitted models to stochastically fill in missing values and generate an ensemble of reconstructed datasets. The summary of the Monte Carlo reconstruction process is also generated, and any cells that could not be resolved are identified.
 
-    logger.info("Step 9/13: running Monte Carlo reconstruction for the full dataset")
+    logger.info("Step 7/13: running Monte Carlo reconstruction for the full dataset")
     monte_carlo_outputs = run_full_dataset_monte_carlo(
         interpolated,
         fitted_models,
         config,
-        selected_cells=sampled_cells,
     )
     reconstructed = monte_carlo_outputs["reconstructed_datasets"]
-    selected_mc_summaries = monte_carlo_outputs["selected_cell_summaries"]
     monte_carlo_summary = monte_carlo_outputs["summary"]
     monte_carlo_unresolved = monte_carlo_outputs["unresolved_cells"]
+
+# A small number of representative cells are selected after reconstruction.
+
+    logger.info("Step 8/13: selecting debug cells filled by Monte Carlo")
+    sampled_cells = select_monte_carlo_filled_debug_cells(
+        interpolated,
+        reconstructed[0],
+        config,
+    )
+
+# Extracts the fit-results for the selected cells without writing metric tables.
+
+    logger.info("Step 9/13: extracting model-fit details for selected debug cells")
+    selected_fit_results = extract_selected_fit_results(
+        fitted_models,
+        sampled_cells,
+        output_dir=None,
+    )
 
 # Now compute uncertainty statistics for all reconstructed dataset.
 
@@ -180,7 +182,7 @@ def run_pipeline(config_path: Path) -> None:
         regridded_support,
         interpolated,
         config,
-        selected_cells=sampled_cells,
+        selected_cells=None,
     )
 
 # 
@@ -227,13 +229,13 @@ def run_pipeline(config_path: Path) -> None:
     logger.info("Spatial-regrid NaN summary: %s", regrid_nan_summary)
     logger.info("Interpolation summary: %s", interpolation_summary)
     logger.info("Interpolation NaN summary: %s", interpolation_nan_summary)
-    logger.info("Selected debug cells: %s", sampled_cells)
+    logger.info("Selected Monte Carlo-filled debug cells: %s", sampled_cells)
     logger.info("Full-dataset fit summary: %s", fit_summary)
     logger.info("Unresolved missing cell count: %s", len(unresolved_cells))
     logger.info("Selected-cell distribution fitting results: %s", selected_fit_results)
     logger.info("Monte Carlo reconstruction summary: %s", monte_carlo_summary)
     logger.info("Monte Carlo unresolved cell count: %s", len(monte_carlo_unresolved))
-    logger.info("Selected-cell Monte Carlo summaries: %s", selected_mc_summaries)
+    logger.info("Selected-cell Monte Carlo summaries are deferred to plot generation.")
     logger.info("Uncertainty summary: %s", uncertainty["summary"])
     logger.info("Selected-cell uncertainty summary: %s", uncertainty["selected_cell_summary"])
     logger.info("Inspection summary after interpolation: %s", after_stats)

@@ -1,4 +1,4 @@
-"""Select reproducible debug cells that remain missing after interpolation."""
+"""Select reproducible debug cells for reporting and plotting."""
 
 from __future__ import annotations
 
@@ -35,6 +35,45 @@ def select_debug_cells(
             for position in chosen_positions
         ]
         # Now selected cells is an array of dictionries.
+
+    if save_outputs:
+        save_selected_cells_json(selected_cells, Path(config.sampled_cells_dir))
+        save_selected_cells_csv(selected_cells, Path(config.sampled_cells_dir))
+
+    return selected_cells
+
+
+def select_monte_carlo_filled_debug_cells(
+    post_interpolation_data: xr.DataArray,
+    reconstructed_data: xr.DataArray,
+    config,
+    save_outputs: bool = True,
+) -> list[dict]:
+    """Select cells that were actually filled by Monte Carlo reconstruction.
+
+    A selected cell must be missing after interpolation and finite in a
+    reconstructed output. This avoids choosing cells that interpolation already
+    filled or cells that remained unresolved.
+    """
+    validate_selection_input(post_interpolation_data)
+    validate_selection_input(reconstructed_data)
+
+    missing_before_monte_carlo = np.isnan(post_interpolation_data.values)
+    finite_after_monte_carlo = np.isfinite(reconstructed_data.values)
+    monte_carlo_filled_mask = missing_before_monte_carlo & finite_after_monte_carlo
+    filled_indices = np.argwhere(monte_carlo_filled_mask)
+    requested_count = int(config.sampled_cell_count)
+
+    if filled_indices.size == 0:
+        selected_cells: list[dict] = []
+    else:
+        rng = random.Random(config.random_seed)
+        selection_count = min(requested_count, len(filled_indices))
+        chosen_positions = rng.sample(range(len(filled_indices)), selection_count)
+        selected_cells = [
+            build_cell_record(post_interpolation_data, filled_indices[position])
+            for position in chosen_positions
+        ]
 
     if save_outputs:
         save_selected_cells_json(selected_cells, Path(config.sampled_cells_dir))
