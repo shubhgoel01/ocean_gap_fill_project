@@ -151,8 +151,8 @@ def coordinate_order_aware_slice(coordinate: xr.DataArray, lower: float, upper: 
     return slice(upper, lower)
 
 
-# because raw data is downloaded from NASA website on daily basis and then merged, it becomes important time coordinate exists and is converted into proper datetime format.
-# It takes the raw time values and asks pandas to convert them into datetime objects, hence now time format is also standardized.
+# The input files already carry the desired temporal product. This only standardizes
+# the time coordinate so later stages can rely on datetime values.
 def ensure_datetime_time(data_array: xr.DataArray) -> xr.DataArray:
     if "time" not in data_array.coords:
         raise ValueError("Missing required time coordinate after dimension standardization.")

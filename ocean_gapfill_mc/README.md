@@ -1,7 +1,6 @@
 # ocean_gapfill_mc
 
 Modular Python pipeline for ocean chlorophyll gap filling using:
-- temporal compositing
 - spatial regridding
 - ordered linear interpolation
 - full-dataset probabilistic model fitting
@@ -10,7 +9,7 @@ Modular Python pipeline for ocean chlorophyll gap filling using:
 
 ## Overview
 
-This project processes daily chlorophyll data and reconstructs values that remain missing after interpolation.
+This project processes 8-day composite chlorophyll data and reconstructs values that remain missing after interpolation.
 
 Important design point:
 - The selected 4-5 debug cells are used only for reporting and inspection.
@@ -22,7 +21,7 @@ The main processing flow is:
 
 1. load configuration
 2. load prepared chlorophyll data from NetCDF
-3. use the stored tropical Indian Ocean 8-day composite dataset
+3. use the prepared tropical Indian Ocean 8-day composite dataset
 4. regrid data to a 1-degree latitude-longitude grid
 5. inspect dataset shape and missing-data coverage
 6. apply ordered interpolation:

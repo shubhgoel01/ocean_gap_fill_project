@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import csv
-import json
 import logging
 from pathlib import Path
 
@@ -50,7 +48,7 @@ def run_full_dataset_monte_carlo(
         sample_values = None
         if fit_result.get("chosen_model") == "kde":
             sample_values = extract_cell_time_series_samples(data_array, fit_result["cell"])
-        sampled_values = simulate_for_cell(fit_result, simulation_count, cell_seed, sample_values) 
+        sampled_values = simulate_for_cell(fit_result, simulation_count, cell_seed, config, sample_values)
         # Tales a dictionary and returns the tuple.
         cell_key = make_cell_key(fit_result["cell"])
 
@@ -68,7 +66,7 @@ def run_full_dataset_monte_carlo(
         
         # Now check if current cell is among the selected cell for debugging, then save the detailed summary
         if cell_key in selected_keys:
-            selected_cell_summaries.append(summarize_cell_simulation(fit_result, sampled_values))
+            selected_cell_summaries.append(summarize_cell_simulation(fit_result, sampled_values, config))
 
     reconstructed_datasets = finalize_reconstructed_datasets(data_array, reconstructed_arrays)
     run_summary = build_monte_carlo_run_summary(
@@ -78,12 +76,8 @@ def run_full_dataset_monte_carlo(
         unresolved_cells,
     )
 
-    # Save selected cell summaries, unresolved warnings, run summary, reconstructed datasets.
+    # Persist reconstructed datasets only. Run summaries stay in memory/logs.
     if save_results:
-        if selected_cells:
-            save_selected_monte_carlo_results(selected_cell_summaries, Path(config.sampled_cells_dir))
-        save_unresolved_warnings(unresolved_cells, Path(config.summaries_dir))
-        save_monte_carlo_run_summary(run_summary, Path(config.summaries_dir))
         if config.save_reconstructed_datasets:
             save_reconstructed_datasets(reconstructed_datasets, Path(config.reconstructed_dir))
 
@@ -93,6 +87,42 @@ def run_full_dataset_monte_carlo(
         "unresolved_cells": unresolved_cells,
         "summary": run_summary,
     }
+
+
+def extract_selected_monte_carlo_summaries(
+    data_array: xr.DataArray,
+    fitted_models: list[dict],
+    selected_cells: list[dict],
+    config,
+) -> list[dict]:
+    """Rebuild Monte Carlo summaries for cells selected after reconstruction.
+
+    Selection now happens after the first Monte Carlo pass so that debug cells
+    are guaranteed to be cells actually filled by reconstruction. This helper
+    repeats the same deterministic per-cell sampling sequence and only retains
+    summaries for the selected cells.
+    """
+    if not selected_cells:
+        return []
+
+    simulation_count = max(1, int(config.monte_carlo_simulations))
+    selected_keys = {make_cell_key(cell) for cell in selected_cells}
+    base_rng = np.random.default_rng(config.random_seed)
+    summaries: list[dict] = []
+
+    for index, fit_result in enumerate(fitted_models):
+        cell_seed = int(base_rng.integers(0, 2**32 - 1)) + index
+        cell_key = make_cell_key(fit_result["cell"])
+        if cell_key not in selected_keys:
+            continue
+
+        sample_values = None
+        if fit_result.get("chosen_model") == "kde":
+            sample_values = extract_cell_time_series_samples(data_array, fit_result["cell"])
+        sampled_values = simulate_for_cell(fit_result, simulation_count, cell_seed, config, sample_values)
+        summaries.append(summarize_cell_simulation(fit_result, sampled_values, config))
+
+    return summaries
 
 # Create numPy-array copies of the dataset. 
 def initialize_reconstruction_arrays(
@@ -107,6 +137,7 @@ def simulate_for_cell(
     fit_result: dict,
     simulation_count: int,
     seed: int,
+    config,
     sample_values: np.ndarray | None = None,
 ) -> np.ndarray:
     # Read model information, which model to use, and parameters of that chosen model.
@@ -142,13 +173,13 @@ def simulate_for_cell(
             random_state=rng,
         )
     elif chosen_model == "kde":
-        samples = simulate_from_kde(fit_result, simulation_count, rng, sample_values)
+        samples = simulate_from_kde(fit_result, simulation_count, rng, sample_values, config)
     else:
         samples = np.full(simulation_count, np.nan, dtype=float)
 
     # Now, we have generated random values for particular cell, but we know chlorophyll concentration cannot be negative physically. 
     # So, even if model by mistake or statistical generate negative values, we apply a helper function that clips negative finite values to zero before returning samples.
-    return enforce_non_negative_samples(samples)
+    return enforce_sample_minimum(samples, float(config.monte_carlo_sample_min_value))
 
 # This function generates Monte Carlo samples for one cell when the chosen model is KDE instead of normal/lognormal/gamma
 def simulate_from_kde(
@@ -156,6 +187,7 @@ def simulate_from_kde(
     simulation_count: int,
     rng: np.random.Generator,
     sample_values: np.ndarray | None,
+    config,
 ) -> np.ndarray:
     # First check KDE status (resolved or not) for current cell, if not resolved instantly return all NaN
     kde_status = fit_result.get("candidate_model_statistics", {}).get("kde", {})
@@ -164,7 +196,7 @@ def simulate_from_kde(
 
     sample_values = np.asarray(sample_values if sample_values is not None else [], dtype=float)
     sample_values = sample_values[np.isfinite(sample_values)]
-    if sample_values.size < 2:
+    if sample_values.size < int(config.min_kde_unique_values):
         return np.full(simulation_count, np.nan, dtype=float)
 
     bandwidth = kde_status.get("bandwidth")
@@ -183,11 +215,11 @@ def simulate_from_kde(
     return np.asarray(sampled).reshape(-1)
 
 
-def enforce_non_negative_samples(samples: np.ndarray) -> np.ndarray:
-    """Clip negative sampled chlorophyll values to zero."""
+def enforce_sample_minimum(samples: np.ndarray, minimum_value: float) -> np.ndarray:
+    """Clip finite sampled chlorophyll values to the configured lower bound."""
     clipped = np.asarray(samples, dtype=float).copy()
     finite_mask = np.isfinite(clipped)
-    clipped[finite_mask] = np.maximum(clipped[finite_mask], 0.0)
+    clipped[finite_mask] = np.maximum(clipped[finite_mask], minimum_value)
     return clipped
 
 
@@ -216,10 +248,11 @@ def write_samples_into_reconstructions(
     return wrote_any_value
 
 
-def summarize_cell_simulation(fit_result: dict, sampled_values: np.ndarray) -> dict:
+def summarize_cell_simulation(fit_result: dict, sampled_values: np.ndarray, config) -> dict:
     """Build summary statistics for one cell simulation."""
     all_samples = np.asarray(sampled_values, dtype=float)
     finite_samples = all_samples[np.isfinite(all_samples)]
+    percentiles = [float(value) for value in config.monte_carlo_summary_percentiles]
 
     if finite_samples.size == 0:
         return {
@@ -227,39 +260,36 @@ def summarize_cell_simulation(fit_result: dict, sampled_values: np.ndarray) -> d
             "chosen_model": fit_result.get("chosen_model"),
             "simulation_count": int(sampled_values.size),
             "sampled_values": [],
-            "first_20_samples": [],
+            "preview_samples": [],
             "sample_mean": None,
             "sample_std": None,
             "sample_min": None,
             "sample_max": None,
-            "percentiles": {
-                "p05": None,
-                "p25": None,
-                "p50": None,
-                "p75": None,
-                "p95": None,
-            },
+            "percentiles": {format_percentile_key(value): None for value in percentiles},
         }
 
-    percentile_values = np.percentile(finite_samples, [5, 25, 50, 75, 95])
+    percentile_values = np.percentile(finite_samples, percentiles)
     return {
         "cell": fit_result["cell"],
         "chosen_model": fit_result.get("chosen_model"),
         "simulation_count": int(sampled_values.size),
         "sampled_values": [float(value) for value in all_samples.tolist()],
-        "first_20_samples": [float(value) for value in finite_samples[:20]],
+        "preview_samples": [
+            float(value) for value in finite_samples[: int(config.monte_carlo_preview_sample_count)]
+        ],
         "sample_mean": float(np.mean(finite_samples)),
         "sample_std": float(np.std(finite_samples, ddof=0)),
         "sample_min": float(np.min(finite_samples)),
         "sample_max": float(np.max(finite_samples)),
         "percentiles": {
-            "p05": float(percentile_values[0]),
-            "p25": float(percentile_values[1]),
-            "p50": float(percentile_values[2]),
-            "p75": float(percentile_values[3]),
-            "p95": float(percentile_values[4]),
+            format_percentile_key(percentile): float(value)
+            for percentile, value in zip(percentiles, percentile_values)
         },
     }
+
+
+def format_percentile_key(percentile: float) -> str:
+    return f"p{int(percentile):02d}" if float(percentile).is_integer() else f"p{percentile:g}"
 
 
 def build_unresolved_cell_warning(fit_result: dict) -> dict:
@@ -311,98 +341,6 @@ def build_monte_carlo_run_summary(
             "were retained only for selected debug cells."
         ),
     }
-
-
-def save_selected_monte_carlo_results(results: list[dict], output_dir: Path) -> None:
-    """Save selected-cell Monte Carlo summaries derived from full results."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-    save_monte_carlo_results_json(results, output_dir / "selected_cells_monte_carlo.json")
-    save_monte_carlo_results_csv(results, output_dir / "selected_cells_monte_carlo.csv")
-
-
-def save_monte_carlo_results_json(results: list[dict], output_path: Path) -> Path:
-    """Save Monte Carlo summaries as JSON."""
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8") as handle:
-        json.dump(results, handle, indent=2)
-    return output_path
-
-
-def save_monte_carlo_results_csv(results: list[dict], output_path: Path) -> Path:
-    """Save Monte Carlo summaries as CSV."""
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = [
-        "time_index",
-        "time_value",
-        "lat_index",
-        "lat_value",
-        "lon_index",
-        "lon_value",
-        "chosen_model",
-        "simulation_count",
-        "sample_mean",
-        "sample_std",
-        "sample_min",
-        "sample_max",
-        "p05",
-        "p25",
-        "p50",
-        "p75",
-        "p95",
-        "first_20_samples",
-    ]
-
-    with output_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        for item in results:
-            writer.writerow(flatten_monte_carlo_result(item))
-
-    return output_path
-
-
-def flatten_monte_carlo_result(result: dict) -> dict:
-    """Flatten nested Monte Carlo results for CSV export."""
-    cell = result["cell"]
-    percentiles = result["percentiles"]
-    return {
-        "time_index": cell["time_index"],
-        "time_value": cell["time_value"],
-        "lat_index": cell["lat_index"],
-        "lat_value": cell["lat_value"],
-        "lon_index": cell["lon_index"],
-        "lon_value": cell["lon_value"],
-        "chosen_model": result["chosen_model"],
-        "simulation_count": result["simulation_count"],
-        "sample_mean": result["sample_mean"],
-        "sample_std": result["sample_std"],
-        "sample_min": result["sample_min"],
-        "sample_max": result["sample_max"],
-        "p05": percentiles["p05"],
-        "p25": percentiles["p25"],
-        "p50": percentiles["p50"],
-        "p75": percentiles["p75"],
-        "p95": percentiles["p95"],
-        "first_20_samples": json.dumps(result["first_20_samples"]),
-    }
-
-
-def save_unresolved_warnings(unresolved_cells: list[dict], summaries_dir: Path) -> Path:
-    """Save unresolved-cell warnings for Monte Carlo reconstruction."""
-    summaries_dir.mkdir(parents=True, exist_ok=True)
-    output_path = summaries_dir / "monte_carlo_unresolved_cells.json"
-    with output_path.open("w", encoding="utf-8") as handle:
-        json.dump(unresolved_cells, handle, indent=2)
-    return output_path
-
-
-def save_monte_carlo_run_summary(summary: dict, summaries_dir: Path) -> Path:
-    """Save full Monte Carlo run summary to JSON."""
-    summaries_dir.mkdir(parents=True, exist_ok=True)
-    output_path = summaries_dir / "monte_carlo_reconstruction_summary.json"
-    with output_path.open("w", encoding="utf-8") as handle:
-        json.dump(summary, handle, indent=2)
-    return output_path
 
 
 def save_reconstructed_datasets(reconstructed_datasets: list[xr.DataArray], output_dir: Path) -> None:

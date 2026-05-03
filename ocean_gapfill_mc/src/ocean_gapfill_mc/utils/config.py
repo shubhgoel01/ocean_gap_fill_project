@@ -19,13 +19,30 @@ class AppConfig:
     output_directory: str
     study_area_bounds: dict[str, float] | None = None
     preprocessed_data_file: Path | None = None
-    composite_window_size: int = 8
-    composite_min_valid_fraction: float = 0.6
     target_grid_resolution: float = 1.0
     random_seed: int = 42
     sampled_cell_count: int = 5
     monte_carlo_simulations: int = 10
     ks_pvalue_threshold: float = 0.05
+    min_parametric_sample_size: int = 5
+    min_positive_variance: float = 1e-8
+    min_kde_sample_size: int = 5
+    min_kde_unique_values: int = 2
+    kde_cv_folds: int = 5
+    kde_bandwidth_min: float = 0.01
+    kde_bandwidth_max: float = 10.0
+    kde_bandwidth_grid_size: int = 50
+    positive_distribution_min_value: float = 0.0
+    monte_carlo_sample_min_value: float = 0.0
+    monte_carlo_summary_percentiles: list[float] | tuple[float, ...] = (5, 25, 50, 75, 95)
+    monte_carlo_preview_sample_count: int = 20
+    uncertainty_lower_percentile: float = 5.0
+    uncertainty_upper_percentile: float = 95.0
+    missing_percentage_plot_vmax: float = 25.0
+    missing_percentage_plot_tick_step: float = 5.0
+    chlorophyll_colorbar_percentile: float = 98.0
+    chlorophyll_colorbar_step: float = 0.05
+    map_tick_spacing: float = 10.0
     save_reconstructed_datasets: bool = True
     config_path: str | None = None
     config_directory: str | None = None
@@ -34,10 +51,6 @@ class AppConfig:
     @property
     def logs_dir(self) -> str:                                  
         return str(Path(self.output_directory) / "logs")
-
-    @property
-    def summaries_dir(self) -> str:
-        return str(Path(self.output_directory) / "summaries")
 
     @property
     def sampled_cells_dir(self) -> str:
@@ -59,7 +72,6 @@ class AppConfig:
         return [
             self.output_directory,
             self.logs_dir,
-            self.summaries_dir,
             self.sampled_cells_dir,
             self.reconstructed_dir,
             self.plots_dir,
@@ -131,11 +143,7 @@ def validate_config(raw_config: dict, config_path: Path | None = None) -> AppCon
     _validate_non_empty_string(config.output_directory, "output_directory")
     _validate_study_area_bounds(config.study_area_bounds)
 
-    # Value validation for numeric fields, helps avoid mistakes like "monte_carlo_simulations": -5, "monte_carlo_simulations": -5
-    if config.composite_window_size <= 0:
-        raise ValueError("composite_window_size must be a positive integer.")
-    if not 0.0 < config.composite_min_valid_fraction <= 1.0:
-        raise ValueError("composite_min_valid_fraction must be between 0 and 1.")
+    # Value validation for numeric fields, helps avoid mistakes like "monte_carlo_simulations": -5.
     if config.target_grid_resolution <= 0:
         raise ValueError("target_grid_resolution must be positive.")
     if config.sampled_cell_count <= 0:
@@ -144,6 +152,45 @@ def validate_config(raw_config: dict, config_path: Path | None = None) -> AppCon
         raise ValueError("monte_carlo_simulations must be a positive integer.")
     if not 0.0 <= config.ks_pvalue_threshold <= 1.0:
         raise ValueError("ks_pvalue_threshold must be between 0 and 1.")
+    if config.min_parametric_sample_size <= 0:
+        raise ValueError("min_parametric_sample_size must be a positive integer.")
+    if config.min_positive_variance <= 0:
+        raise ValueError("min_positive_variance must be positive.")
+    if config.min_kde_sample_size <= 0:
+        raise ValueError("min_kde_sample_size must be a positive integer.")
+    if config.min_kde_unique_values <= 0:
+        raise ValueError("min_kde_unique_values must be a positive integer.")
+    if config.kde_cv_folds <= 1:
+        raise ValueError("kde_cv_folds must be greater than 1.")
+    if config.min_kde_sample_size < config.kde_cv_folds:
+        raise ValueError("min_kde_sample_size must be greater than or equal to kde_cv_folds.")
+    if config.kde_bandwidth_min <= 0 or config.kde_bandwidth_max <= config.kde_bandwidth_min:
+        raise ValueError("KDE bandwidth bounds must satisfy 0 < min < max.")
+    if config.kde_bandwidth_grid_size <= 1:
+        raise ValueError("kde_bandwidth_grid_size must be greater than 1.")
+    if config.positive_distribution_min_value < 0:
+        raise ValueError("positive_distribution_min_value must be non-negative.")
+    if config.monte_carlo_sample_min_value < 0:
+        raise ValueError("monte_carlo_sample_min_value must be non-negative.")
+    _validate_percentile_sequence(
+        config.monte_carlo_summary_percentiles,
+        "monte_carlo_summary_percentiles",
+    )
+    if config.monte_carlo_preview_sample_count <= 0:
+        raise ValueError("monte_carlo_preview_sample_count must be a positive integer.")
+    _validate_percentile(config.uncertainty_lower_percentile, "uncertainty_lower_percentile")
+    _validate_percentile(config.uncertainty_upper_percentile, "uncertainty_upper_percentile")
+    if config.uncertainty_lower_percentile >= config.uncertainty_upper_percentile:
+        raise ValueError("uncertainty_lower_percentile must be less than uncertainty_upper_percentile.")
+    if config.missing_percentage_plot_vmax <= 0:
+        raise ValueError("missing_percentage_plot_vmax must be positive.")
+    if config.missing_percentage_plot_tick_step <= 0:
+        raise ValueError("missing_percentage_plot_tick_step must be positive.")
+    _validate_percentile(config.chlorophyll_colorbar_percentile, "chlorophyll_colorbar_percentile")
+    if config.chlorophyll_colorbar_step <= 0:
+        raise ValueError("chlorophyll_colorbar_step must be positive.")
+    if config.map_tick_spacing <= 0:
+        raise ValueError("map_tick_spacing must be positive.")
 
     return config
 
@@ -202,6 +249,19 @@ def _coerce_float(value, field_name: str) -> float:
         return float(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{field_name} must be numeric.") from exc
+
+
+def _validate_percentile(value: float, field_name: str) -> None:
+    value = _coerce_float(value, field_name)
+    if not 0.0 <= value <= 100.0:
+        raise ValueError(f"{field_name} must be between 0 and 100.")
+
+
+def _validate_percentile_sequence(values, field_name: str) -> None:
+    if not values:
+        raise ValueError(f"{field_name} must contain at least one percentile.")
+    for value in values:
+        _validate_percentile(value, field_name)
 
 
 def _resolve_config_path(path_value: str, config_base_dir: Path) -> Path:

@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import numpy as np
 import xarray as xr
 
@@ -35,9 +32,6 @@ def regrid_to_target_latlon(
     ).mean()
 
     summary = build_spatial_summary(prepared, regridded)
-
-    if save_summary:
-        save_spatial_summary(summary, Path(config.summaries_dir))
 
     return regridded, summary
 # NOTE : Above we are not using weighted mean but uisng normal average because 
@@ -115,10 +109,3 @@ def build_spatial_summary(original: xr.DataArray, regridded: xr.DataArray) -> di
     }
 
 
-def save_spatial_summary(summary: dict, summaries_dir: Path) -> Path:
-    """Save the spatial regridding summary as JSON."""
-    summaries_dir.mkdir(parents=True, exist_ok=True)
-    output_path = summaries_dir / "spatial_regrid_summary.json"
-    with output_path.open("w", encoding="utf-8") as handle:
-        json.dump(summary, handle, indent=2)
-    return output_path

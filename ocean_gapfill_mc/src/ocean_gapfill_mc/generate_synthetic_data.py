@@ -28,7 +28,7 @@ import xarray as xr
 def generate_synthetic_chlorophyll_dataset(
     output_path: str | Path = "data/raw/synthetic_data.nc",
     random_seed: int = 42,
-    time_steps: int = 365 * 2,  # 2 years daily data
+    time_steps: int = 46 * 2,   # roughly 2 years of 8-day composites
     lat_size: int = 180,        # higher spatial resolution
     lon_size: int = 360,
     random_missing_fraction: float = 0.15,
@@ -47,7 +47,7 @@ def generate_synthetic_chlorophyll_dataset(
     rng = np.random.default_rng(random_seed)
 
     # time dimension
-    time = pd.date_range("2003-01-01", periods=time_steps, freq="D")
+    time = pd.date_range("2003-01-01", periods=time_steps, freq="8D")
 
     # spatial grid (~0.66° resolution approximates finer grid behaviour)
     lat = np.linspace(-60.0, 60.0, lat_size)
@@ -177,7 +177,7 @@ def apply_random_missing_values(
 def apply_structured_missing_regions(
     values: np.ndarray,
     rng: np.random.Generator,
-    cloud_event_count: int = 25,
+    cloud_event_count: int = 12,
 ) -> np.ndarray:
     """
     Create cloud-like spatial gaps persisting over time.
@@ -192,9 +192,9 @@ def apply_structured_missing_regions(
 
     for _ in range(cloud_event_count):
 
-        start_time_index = int(rng.integers(0, time_steps - 10))
+        start_time_index = int(rng.integers(0, max(1, time_steps - 4)))
 
-        duration = int(rng.integers(5, 20))
+        duration = int(rng.integers(2, 7))
 
         lat_center = int(rng.integers(0, lat_size))
         lon_center = int(rng.integers(0, lon_size))

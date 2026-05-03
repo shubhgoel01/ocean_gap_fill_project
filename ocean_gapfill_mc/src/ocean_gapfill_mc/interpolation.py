@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import numpy as np
 import xarray as xr
@@ -59,9 +58,6 @@ def apply_ordered_interpolation(
 
     working.attrs = dict(working.attrs)
     working.attrs["interpolation_summary"] = json.dumps(summary)
-
-    if save_summary:
-        save_interpolation_summary(summary, Path(config.summaries_dir))
 
     return working
 
@@ -154,33 +150,3 @@ def count_nan_cells(values: np.ndarray) -> int:
     """Count NaN cells in the provided array."""
     return int(np.isnan(values).sum())
 
-
-def save_interpolation_summary(summary: dict, summaries_dir: Path) -> None:
-    """Save interpolation results as JSON and a readable text report."""
-    summaries_dir.mkdir(parents=True, exist_ok=True)
-
-    json_path = summaries_dir / "interpolation_summary.json"
-    with json_path.open("w", encoding="utf-8") as handle:
-        json.dump(summary, handle, indent=2)
-
-    text_path = summaries_dir / "interpolation_summary.txt"
-    lines = [
-        "Interpolation Summary",
-        "=====================",
-        "Interpolation order: longitude -> latitude -> time",
-        f"NaN count before interpolation: {summary['nan_count_before']}",
-        f"NaN count after interpolation: {summary['nan_count_after']}",
-        f"Number of cells filled: {summary['filled_cells']}",
-        f"Remaining NaN percentage: {summary['remaining_nan_percent']:.4f}%",
-        "",
-        "Per-pass results:",
-    ]
-
-    for item in summary["pass_summaries"]:
-        lines.append(
-            f"  {item['axis']}: filled {item['filled_cells']} cells, "
-            f"remaining NaNs {item['remaining_nan_count']}"
-        )
-
-    with text_path.open("w", encoding="utf-8") as handle:
-        handle.write("\n".join(lines) + "\n")

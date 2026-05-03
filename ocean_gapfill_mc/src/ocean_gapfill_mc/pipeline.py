@@ -16,7 +16,10 @@ from .distribution_fit import (
 )
 from .inspect_dataset import inspect_phase1_dataset
 from .interpolation import apply_ordered_interpolation
-from .monte_carlo import run_full_dataset_monte_carlo
+from .monte_carlo import (
+    extract_selected_monte_carlo_summaries,
+    run_full_dataset_monte_carlo,
+)
 from .plotting import generate_pipeline_plots, save_pipeline_chlorophyll_datasets
 from .select_cells import select_monte_carlo_filled_debug_cells
 from .spatial_regrid import regrid_to_target_latlon
@@ -105,7 +108,11 @@ def run_pipeline(config_path: Path) -> None:
         "Step 2/13: regridding to %.3f-degree latitude-longitude grid",
         config.target_grid_resolution,
     )
-    regridded, regrid_summary = regrid_to_target_latlon(dataset, config)
+    regridded, regrid_summary = regrid_to_target_latlon(
+        dataset,
+        config,
+        save_summary=False,
+    )
     regridded_support, _ = regrid_to_target_latlon(
         raw_observation_support,
         config,
@@ -118,12 +125,13 @@ def run_pipeline(config_path: Path) -> None:
         regridded,
         label="phase1_regridded",
         config=config,
+        save_outputs=False,
     )
 
 # Phase-4 the ordered interpolation method is applied to fill in missing values, then the interpolation summary is extracted and NaN stats are re-calculated and logged.
 
     logger.info("Step 4/13: applying ordered interpolation")
-    interpolated = apply_ordered_interpolation(regridded, config)
+    interpolated = apply_ordered_interpolation(regridded, config, save_summary=False)
     interpolation_summary = extract_interpolation_summary(interpolated)
     interpolation_nan_summary = log_nan_stage(logger, interpolated, "ordered interpolation")
 
@@ -134,12 +142,17 @@ def run_pipeline(config_path: Path) -> None:
         interpolated,
         label="after_interpolation",
         config=config,
+        save_outputs=False,
     )
 
 # Now after interpolation, fit-probability-distributions is identified for all remaining missing (NaN) cells.
 
     logger.info("Step 6/13: fitting probability models for all remaining missing cells")
-    fit_outputs = fit_all_missing_cell_distributions(interpolated, config)
+    fit_outputs = fit_all_missing_cell_distributions(
+        interpolated,
+        config,
+        save_results=False,
+    )
     fitted_models = fit_outputs["fit_results"]
     fit_summary = fit_outputs["summary"]
     unresolved_cells = fit_outputs["unresolved_cells"]
@@ -173,6 +186,12 @@ def run_pipeline(config_path: Path) -> None:
         sampled_cells,
         output_dir=None,
     )
+    selected_monte_carlo_summaries = extract_selected_monte_carlo_summaries(
+        interpolated,
+        fitted_models,
+        sampled_cells,
+        config,
+    )
 
 # Now compute uncertainty statistics for all reconstructed dataset.
 
@@ -182,7 +201,7 @@ def run_pipeline(config_path: Path) -> None:
         regridded_support,
         interpolated,
         config,
-        selected_cells=None,
+        selected_cells=sampled_cells,
     )
 
 # 
@@ -220,6 +239,8 @@ def run_pipeline(config_path: Path) -> None:
         ],
         interpolation_summary=interpolation_summary,
         fit_summary=fit_summary,
+        selected_fit_results=selected_fit_results,
+        selected_uncertainty_summary=uncertainty["selected_cell_summary"],
         config=config,
     )
     logger.info("Initial dataset baseline summary: %s", initial_stats)
@@ -235,7 +256,7 @@ def run_pipeline(config_path: Path) -> None:
     logger.info("Selected-cell distribution fitting results: %s", selected_fit_results)
     logger.info("Monte Carlo reconstruction summary: %s", monte_carlo_summary)
     logger.info("Monte Carlo unresolved cell count: %s", len(monte_carlo_unresolved))
-    logger.info("Selected-cell Monte Carlo summaries are deferred to plot generation.")
+    logger.info("Selected-cell Monte Carlo summaries: %s", selected_monte_carlo_summaries)
     logger.info("Uncertainty summary: %s", uncertainty["summary"])
     logger.info("Selected-cell uncertainty summary: %s", uncertainty["selected_cell_summary"])
     logger.info("Inspection summary after interpolation: %s", after_stats)

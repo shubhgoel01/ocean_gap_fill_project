@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import csv
-import json
-from pathlib import Path
 import random
 
 import numpy as np
@@ -15,7 +12,6 @@ import xarray as xr
 def select_debug_cells(
     data_array: xr.DataArray,
     config,
-    save_outputs: bool = True,
 ) -> list[dict]:
     validate_selection_input(data_array)
 
@@ -36,10 +32,6 @@ def select_debug_cells(
         ]
         # Now selected cells is an array of dictionries.
 
-    if save_outputs:
-        save_selected_cells_json(selected_cells, Path(config.sampled_cells_dir))
-        save_selected_cells_csv(selected_cells, Path(config.sampled_cells_dir))
-
     return selected_cells
 
 
@@ -47,7 +39,6 @@ def select_monte_carlo_filled_debug_cells(
     post_interpolation_data: xr.DataArray,
     reconstructed_data: xr.DataArray,
     config,
-    save_outputs: bool = True,
 ) -> list[dict]:
     """Select cells that were actually filled by Monte Carlo reconstruction.
 
@@ -74,10 +65,6 @@ def select_monte_carlo_filled_debug_cells(
             build_cell_record(post_interpolation_data, filled_indices[position])
             for position in chosen_positions
         ]
-
-    if save_outputs:
-        save_selected_cells_json(selected_cells, Path(config.sampled_cells_dir))
-        save_selected_cells_csv(selected_cells, Path(config.sampled_cells_dir))
 
     return selected_cells
 
@@ -110,33 +97,3 @@ def build_cell_record(data_array: xr.DataArray, index_triplet: np.ndarray) -> di
         "lon_index": lon_index,
         "lon_value": float(lon_value),
     }
-
-
-def save_selected_cells_json(selected_cells: list[dict], output_dir: Path) -> Path:
-    """Save selected debug cells as JSON."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / "selected_debug_cells.json"
-    with output_path.open("w", encoding="utf-8") as handle:
-        json.dump(selected_cells, handle, indent=2)
-    return output_path
-
-# Saves selected debug cells into a CSV file so these can be viewed easily in tabular format.
-def save_selected_cells_csv(selected_cells: list[dict], output_dir: Path) -> Path:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / "selected_debug_cells.csv"
-    fieldnames = [
-        "time_index",
-        "time_value",
-        "lat_index",
-        "lat_value",
-        "lon_index",
-        "lon_value",
-    ]
-
-    with output_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in selected_cells:
-            writer.writerow(row)
-
-    return output_path

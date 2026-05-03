@@ -44,14 +44,6 @@ def fit_all_missing_cell_distributions(
             results,
             Path(config.reconstructed_dir) / "full_missing_cell_model_fits.json",
         )
-        save_fit_summary(
-            summary,
-            Path(config.summaries_dir) / "full_missing_cell_model_fit_summary.json",
-        )
-        save_distribution_results(
-            unresolved_cells,
-            Path(config.summaries_dir) / "unresolved_missing_cells.json",
-        )
 
     return {
         "fit_results": results,
@@ -68,11 +60,6 @@ def extract_selected_fit_results(
     """Extract reporting-only fit results for the selected debug cells."""
     selected_keys = {make_cell_key(cell) for cell in selected_cells}
     filtered = [result for result in full_results if make_cell_key(result["cell"]) in selected_keys]
-
-    if output_dir is not None:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        save_distribution_results(filtered, output_dir / "selected_debug_cell_model_fits.json")
-
     return filtered
 
 # Check if data has three dimensions
@@ -526,9 +513,3 @@ def save_distribution_results(results: list[dict], output_path: Path) -> Path:
     return output_path
 
 
-def save_fit_summary(summary: dict, output_path: Path) -> Path:
-    """Save full-dataset fit coverage summary to JSON."""
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8") as handle:
-        json.dump(summary, handle, indent=2)
-    return output_path
