@@ -65,6 +65,7 @@ def evaluate_timestep_pair_validation(
         pair_results.append(result)
         pair_dir = Path(config.validation_dir) / f"pair{result['pair_index']}"
         write_pair_report(result, pair_dir / "report.txt")
+        write_validation_points_report(result, pair_dir / "validated_points.txt")
         print(format_pair_console_line(result))
 
     summary = summarize_validation_results(pair_results)
@@ -138,7 +139,85 @@ def evaluate_precomputed_validation_pair(
     p05_vals = p05_map[t1][final_mask]
     p95_vals = p95_map[t1][final_mask]
     metrics = compute_validation_metrics(record["true_values"], pred_vals, p05_vals, p95_vals)
-    return {**record_without_arrays(record), **stage_counts, **metrics}
+    point_records = build_validation_point_records(
+        record,
+        pred_vals,
+        p05_vals,
+        p95_vals,
+        interpolated_data,
+        reconstructed_datasets,
+    )
+    return {**record_without_arrays(record), **stage_counts, **metrics, "point_records": point_records}
+
+
+def build_validation_point_records(
+    record: dict,
+    pred_vals: np.ndarray,
+    p05_vals: np.ndarray,
+    p95_vals: np.ndarray,
+    interpolated_data: xr.DataArray,
+    reconstructed_datasets: list[xr.DataArray],
+) -> list[dict]:
+    """Build per-hidden-point validation records for inspection."""
+    t1 = int(record["t1"])
+    row_indices, col_indices = np.where(record["final_mask"])
+    true_vals = np.asarray(record["true_values"], dtype=float)
+    pred_vals = np.asarray(pred_vals, dtype=float)
+    p05_vals = np.asarray(p05_vals, dtype=float)
+    p95_vals = np.asarray(p95_vals, dtype=float)
+    interpolated_vals = np.asarray(interpolated_data.values[t1][record["final_mask"]], dtype=float)
+    if reconstructed_datasets:
+        reconstructed_vals = np.asarray(
+            reconstructed_datasets[0].values[t1][record["final_mask"]],
+            dtype=float,
+        )
+    else:
+        reconstructed_vals = np.full_like(true_vals, np.nan, dtype=float)
+
+    lat_values = np.asarray(interpolated_data["lat"].values, dtype=float)
+    lon_values = np.asarray(interpolated_data["lon"].values, dtype=float)
+
+    point_records = []
+    for index, (lat_index, lon_index) in enumerate(zip(row_indices, col_indices), start=1):
+        true_value = true_vals[index - 1]
+        estimated_value = pred_vals[index - 1]
+        error = estimated_value - true_value if np.isfinite(estimated_value) else np.nan
+        point_records.append(
+            {
+                "point_index": int(index),
+                "time_index": t1,
+                "time_value": record["t1_time"],
+                "lat_index": int(lat_index),
+                "lat_value": float(lat_values[lat_index]),
+                "lon_index": int(lon_index),
+                "lon_value": float(lon_values[lon_index]),
+                "fill_stage": determine_validation_point_stage(
+                    interpolated_vals[index - 1],
+                    reconstructed_vals[index - 1],
+                ),
+                "actual_value": float(true_value),
+                "estimated_value": float(estimated_value) if np.isfinite(estimated_value) else None,
+                "error": float(error) if np.isfinite(error) else None,
+                "absolute_error": float(abs(error)) if np.isfinite(error) else None,
+                "p05": float(p05_vals[index - 1]) if np.isfinite(p05_vals[index - 1]) else None,
+                "p95": float(p95_vals[index - 1]) if np.isfinite(p95_vals[index - 1]) else None,
+                "covered": bool(
+                    np.isfinite(true_value)
+                    and np.isfinite(p05_vals[index - 1])
+                    and np.isfinite(p95_vals[index - 1])
+                    and p05_vals[index - 1] <= true_value <= p95_vals[index - 1]
+                ),
+            }
+        )
+    return point_records
+
+
+def determine_validation_point_stage(interpolated_value: float, reconstructed_value: float) -> str:
+    if np.isfinite(interpolated_value):
+        return "filled_by_interpolation"
+    if np.isfinite(reconstructed_value):
+        return "filled_by_monte_carlo"
+    return "unresolved_after_reconstruction"
 
 
 def compute_validation_fill_stage_counts(
@@ -405,6 +484,52 @@ def write_pair_report(result: dict, output_path: Path) -> Path:
     return output_path
 
 
+def write_validation_points_report(result: dict, output_path: Path) -> Path:
+    """Write actual vs estimated values for every hidden validation point."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    point_records = result.get("point_records", [])
+    lines = [
+        f"Validation Pair {result['pair_index']} Points",
+        "========================",
+        "Units: chlorophyll-a concentration, mg m^-3",
+        "",
+    ]
+    if not point_records:
+        lines.append("No hidden validation points were available.")
+        output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return output_path
+
+    header = (
+        "point_index,time_index,time_value,lat_index,lat_value,lon_index,lon_value,"
+        "fill_stage,actual_value,estimated_value,error,absolute_error,p05,p95,covered"
+    )
+    lines.append(header)
+    for point in point_records:
+        lines.append(
+            ",".join(
+                [
+                    str(point["point_index"]),
+                    str(point["time_index"]),
+                    str(point["time_value"]),
+                    str(point["lat_index"]),
+                    format_float(point["lat_value"]),
+                    str(point["lon_index"]),
+                    format_float(point["lon_value"]),
+                    str(point["fill_stage"]),
+                    format_float(point["actual_value"]),
+                    format_optional_float(point["estimated_value"]),
+                    format_optional_float(point["error"]),
+                    format_optional_float(point["absolute_error"]),
+                    format_optional_float(point["p05"]),
+                    format_optional_float(point["p95"]),
+                    str(point["covered"]),
+                ]
+            )
+        )
+    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return output_path
+
+
 def write_summary_report(summary: dict, output_path: Path) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
@@ -482,3 +607,11 @@ def format_summary_console_block(summary: dict) -> str:
 
 def format_metric(value: float | None) -> str:
     return "NA" if value is None else f"{float(value):.6f}"
+
+
+def format_float(value: float) -> str:
+    return f"{float(value):.10g}"
+
+
+def format_optional_float(value: float | None) -> str:
+    return "" if value is None else format_float(value)

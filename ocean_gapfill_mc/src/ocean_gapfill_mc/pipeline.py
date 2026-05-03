@@ -143,16 +143,10 @@ def run_pipeline(config_path: Path) -> None:
 
 # Phase-4 the ordered interpolation method is applied to fill in missing values, then the interpolation summary is extracted and NaN stats are re-calculated and logged.
 
-    logger.info("Step 5/15: SKIPPING ordered interpolation (testing MC directly)")
-    # TEMPORARILY COMMENTED OUT TO TEST MC DIRECTLY
-    # interpolated = apply_ordered_interpolation(regridded, config)
-    # interpolation_summary = extract_interpolation_summary(interpolated)
-    # interpolation_nan_summary = log_nan_stage(logger, interpolated, "ordered interpolation")
-    
-    # Skip interpolation - use regridded data directly for MC
-    interpolated = regridded
-    interpolation_summary = {}
-    interpolation_nan_summary = {}
+    logger.info("Step 5/15: applying ordered interpolation")
+    interpolated = apply_ordered_interpolation(regridded, config)
+    interpolation_summary = extract_interpolation_summary(interpolated)
+    interpolation_nan_summary = log_nan_stage(logger, interpolated, "ordered interpolation")
 
 # Compare before interpolation and after interpolation stats, we can see how much NaN percentage has reduced.
 

@@ -109,32 +109,20 @@ def simulate_for_cell(
     seed: int,
     sample_values: np.ndarray | None = None,
 ) -> np.ndarray:
-    # Read model information, which model to use, and parameters of that chosen model.
     chosen_model = fit_result.get("chosen_model")
     candidate_stats = fit_result.get("candidate_model_statistics", {})
-
-    # Initialize a random generator for this cell.
     rng = np.random.default_rng(seed)
 
     if chosen_model == "normal":
         params = candidate_stats["normal"]["parameters"]
-        samples = rng.normal(
+        log_samples = rng.normal(
             loc=params["loc"],
             scale=params["scale"],
             size=simulation_count,
-        )
-    elif chosen_model == "lognormal":
-        params = candidate_stats["lognormal"]["parameters"]
-        samples = stats.lognorm.rvs(
-            s=params["shape"],
-            loc=params["loc"],
-            scale=params["scale"],
-            size=simulation_count,
-            random_state=rng,
         )
     elif chosen_model == "gamma":
         params = candidate_stats["gamma"]["parameters"]
-        samples = stats.gamma.rvs(
+        log_samples = stats.gamma.rvs(
             a=params["shape"],
             loc=params["loc"],
             scale=params["scale"],
@@ -142,13 +130,13 @@ def simulate_for_cell(
             random_state=rng,
         )
     elif chosen_model == "kde":
-        samples = simulate_from_kde(fit_result, simulation_count, rng, sample_values)
+        log_samples = simulate_from_kde(fit_result, simulation_count, rng, sample_values)
     else:
-        samples = np.full(simulation_count, np.nan, dtype=float)
+        return np.full(simulation_count, np.nan, dtype=float)
 
-    # Now, we have generated random values for particular cell, but we know chlorophyll concentration cannot be negative physically. 
-    # So, even if model by mistake or statistical generate negative values, we apply a helper function that clips negative finite values to zero before returning samples.
-    return enforce_non_negative_samples(samples)
+    # Back-transform from log-space to original chlorophyll scale.
+    # exp() is always positive so no clipping needed.
+    return np.exp(np.asarray(log_samples, dtype=float))
 
 # This function generates Monte Carlo samples for one cell when the chosen model is KDE instead of normal/lognormal/gamma
 def simulate_from_kde(
@@ -157,30 +145,26 @@ def simulate_from_kde(
     rng: np.random.Generator,
     sample_values: np.ndarray | None,
 ) -> np.ndarray:
-    # First check KDE status (resolved or not) for current cell, if not resolved instantly return all NaN
+    # KDE returns samples in log-space; caller handles exp() back-transform.
     kde_status = fit_result.get("candidate_model_statistics", {}).get("kde", {})
     if kde_status.get("status") != "ok":
         return np.full(simulation_count, np.nan, dtype=float)
 
-    sample_values = np.asarray(sample_values if sample_values is not None else [], dtype=float)
-    sample_values = sample_values[np.isfinite(sample_values)]
-    if sample_values.size < 2:
+    log_vals = np.asarray(sample_values if sample_values is not None else [], dtype=float)
+    log_vals = log_vals[np.isfinite(log_vals)]
+    if log_vals.size < 2:
         return np.full(simulation_count, np.nan, dtype=float)
 
     bandwidth = kde_status.get("bandwidth")
     if bandwidth is None:
-        logger.warning(
-            "KDE fit result for cell %s is missing a bandwidth; falling back to Scott's rule.",
-            fit_result.get("cell"),
-        )
-        kde = stats.gaussian_kde(sample_values)
+        kde = stats.gaussian_kde(log_vals)
     else:
         kde = stats.gaussian_kde(
-            sample_values,
-            bw_method=make_gaussian_kde_bw_method(sample_values, float(bandwidth)),
+            log_vals,
+            bw_method=make_gaussian_kde_bw_method(log_vals, float(bandwidth)),
         )
     sampled = kde.resample(simulation_count, seed=rng)
-    return np.asarray(sampled).reshape(-1)
+    return np.asarray(sampled).reshape(-1)  # log-space; caller does exp()
 
 
 def enforce_non_negative_samples(samples: np.ndarray) -> np.ndarray:

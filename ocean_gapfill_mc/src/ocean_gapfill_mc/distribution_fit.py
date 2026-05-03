@@ -163,7 +163,11 @@ def extract_cell_time_series_samples(data_array: xr.DataArray, cell: dict) -> np
 
     series = data_array.isel(lat=lat_index, lon=lon_index).values
     series = np.asarray(series, dtype=float)
-    return series[np.isfinite(series)]
+    valid = series[np.isfinite(series) & (series > 0)]
+    # Log-transform: ocean color is log-normally distributed.
+    # Fitting in log-space keeps variance controlled and guarantees
+    # positive back-transformed samples after exp().
+    return np.log(valid)
 
 # for one missing cell => Take its sample values => Fit normal, lognormal, gamma => Check KS test p-value for each fit => Choose best fit that passes the p-value threshold => If no fit passes, mark it as unresolved.
 def fit_models_for_cell(cell: dict, sample_values: np.ndarray, pvalue_threshold: float) -> dict:
@@ -194,18 +198,16 @@ def fit_models_for_cell(cell: dict, sample_values: np.ndarray, pvalue_threshold:
         return finalize_with_kde_status(result, sample_values)
 
     normal_stats = fit_normal_distribution(sample_values)
-    lognormal_stats = fit_lognormal_distribution(sample_values)
     gamma_stats = fit_gamma_distribution(sample_values)
 
+    # Do not fit a lognormal here — samples are already in log-space.
     result["candidate_model_statistics"] = {
         "normal": normal_stats,
-        "lognormal": lognormal_stats,
         "gamma": gamma_stats,
     }
 
     acceptable_models = [
         ("normal", normal_stats),
-        ("lognormal", lognormal_stats),
         ("gamma", gamma_stats),
     ]
     acceptable_models = [
@@ -499,7 +501,8 @@ def evaluate_kde_availability(sample_values: np.ndarray) -> dict:
 def select_kde_bandwidth(sample_values: np.ndarray) -> float:
     sample_values = np.asarray(sample_values, dtype=float)
     sample_values = sample_values[np.isfinite(sample_values)].reshape(-1, 1)
-    bandwidth_grid = np.logspace(-2, 1, 50)
+    # Narrower search on log-space samples: 0.01 to ~3.2
+    bandwidth_grid = np.logspace(-2, 0.5, 40)
     search = GridSearchCV(
         KernelDensity(kernel="gaussian"),
         {"bandwidth": bandwidth_grid},
