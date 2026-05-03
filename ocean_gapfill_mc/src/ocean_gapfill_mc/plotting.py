@@ -375,15 +375,17 @@ def write_selected_cell_metadata(
         f"Longitude index: {cell['lon_index']}",
         f"Longitude: {float(cell['lon_value']):.6f} degrees_east",
         f"Selected model: {format_model_name(model_name)}",
-        f"Fitting sample count: {int(sample_values.size)}",
-        f"Unit: chlorophyll-a concentration, mg m^-3",
+        f"Fitting log-space sample count: {int(sample_values.size)}",
+        "Fitting space: natural log of chlorophyll-a concentration",
+        "Histogram/CDF plot unit: chlorophyll-a concentration, mg m^-3",
+        "Q-Q plot unit: natural log of chlorophyll-a concentration",
     ]
     if fit_result.get("chosen_p_value") is not None:
         lines.append(f"Chosen-model KS p-value: {float(fit_result['chosen_p_value']):.6g}")
     if model_stats.get("ks_statistic") is not None:
         lines.append(f"Chosen-model KS statistic: {float(model_stats['ks_statistic']):.6g}")
     if parameters:
-        lines.append("Fitted parameters:")
+        lines.append("Fitted parameters in log-space:")
         for name, value in parameters.items():
             lines.append(f"  {name}: {float(value):.10g}")
 
@@ -410,32 +412,32 @@ def append_uncertainty_metadata(cell_dir: Path, record: dict) -> Path:
 
 
 def extract_plot_sample_values(data_array: xr.DataArray, fit_result: dict) -> np.ndarray:
-    """Use the same support values as fitting for the selected model."""
+    """Use the same log-space support values as distribution fitting."""
     sample_values = extract_cell_time_series_samples(data_array, fit_result["cell"])
     sample_values = np.asarray(sample_values, dtype=float)
-    sample_values = sample_values[np.isfinite(sample_values)]
-
-    model_name = str(fit_result.get("chosen_model", "")).lower()
-    if model_name in {"lognormal", "gamma"}:
-        sample_values = sample_values[sample_values > 0.0]
-    return sample_values
+    return sample_values[np.isfinite(sample_values)]
 
 
 def plot_selected_cell_histogram_pdf(
-    sample_values: np.ndarray,
+    log_sample_values: np.ndarray,
     fit_result: dict,
     output_path: Path,
 ) -> Path:
     """Plot sample histogram with only the selected best-fit PDF overlaid."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     model_name = str(fit_result.get("chosen_model", "unknown")).lower()
-    x_values = build_pdf_x_values(sample_values)
-    pdf_values = evaluate_selected_model_pdf(x_values, sample_values, fit_result)
+    chl_sample_values = np.exp(log_sample_values)
+    x_values = build_pdf_x_values(chl_sample_values)
+    pdf_values = evaluate_selected_model_pdf(
+        x_values,
+        log_sample_values,
+        fit_result,
+    )
 
     fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
     ax.hist(
-        sample_values,
-        bins=choose_histogram_bins(sample_values),
+        chl_sample_values,
+        bins=choose_histogram_bins(chl_sample_values),
         density=True,
         alpha=0.68,
         color=plt.get_cmap(BAR_COLORMAP)(0.22),
@@ -462,11 +464,11 @@ def plot_selected_cell_histogram_pdf(
 
 
 def plot_selected_cell_qq(
-    sample_values: np.ndarray,
+    log_sample_values: np.ndarray,
     fit_result: dict,
     output_path: Path,
 ) -> Path | None:
-    """Plot Q-Q diagnostics for supported parametric selected models."""
+    """Plot Q-Q diagnostics in log-space for supported parametric models."""
     model_name = str(fit_result.get("chosen_model", "")).lower()
     probplot_dist, sparams = get_probplot_distribution(model_name, fit_result)
     if probplot_dist is None:
@@ -475,7 +477,7 @@ def plot_selected_cell_qq(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(6, 6), constrained_layout=True)
     stats.probplot(
-        sample_values,
+        log_sample_values,
         dist=probplot_dist,
         sparams=sparams,
         plot=ax,
@@ -484,9 +486,9 @@ def plot_selected_cell_qq(
     ax.get_lines()[0].set_markeredgecolor("#333333")
     ax.get_lines()[1].set_color("#111111")
     ax.get_lines()[1].set_linewidth(1.8)
-    ax.set_title(f"Q-Q Plot\n{format_cell_location(fit_result['cell'])} | {format_model_name(model_name)}")
-    ax.set_xlabel("Theoretical quantiles")
-    ax.set_ylabel("Ordered observed values")
+    ax.set_title(f"Q-Q Plot (Log-Space)\n{format_cell_location(fit_result['cell'])} | {format_model_name(model_name)}")
+    ax.set_xlabel("Theoretical log-space quantiles")
+    ax.set_ylabel("Ordered log(chlorophyll-a)")
     ax.grid(True, linewidth=0.4, alpha=0.35)
 
     fig.savefig(output_path, dpi=160)
@@ -495,16 +497,20 @@ def plot_selected_cell_qq(
 
 
 def plot_selected_cell_cdf_comparison(
-    sample_values: np.ndarray,
+    log_sample_values: np.ndarray,
     fit_result: dict,
     output_path: Path,
 ) -> Path:
     """Plot empirical CDF against the selected theoretical CDF."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     model_name = str(fit_result.get("chosen_model", "unknown")).lower()
-    sorted_values = np.sort(sample_values)
+    sorted_values = np.sort(np.exp(log_sample_values))
     empirical_cdf = np.arange(1, sorted_values.size + 1, dtype=float) / sorted_values.size
-    theoretical_cdf = evaluate_selected_model_cdf(sorted_values, sample_values, fit_result)
+    theoretical_cdf = evaluate_selected_model_cdf(
+        sorted_values,
+        log_sample_values,
+        fit_result,
+    )
 
     fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
     ax.step(
@@ -543,24 +549,31 @@ def build_pdf_x_values(sample_values: np.ndarray) -> np.ndarray:
         padding = max(abs(minimum) * 0.1, 0.01)
     else:
         padding = (maximum - minimum) * 0.1
-    lower = max(0.0, minimum - padding)
+    lower = max(1e-12, minimum - padding)
     upper = maximum + padding
     return np.linspace(lower, upper, 250)
 
 
 def evaluate_selected_model_pdf(
     x_values: np.ndarray,
-    sample_values: np.ndarray,
+    log_sample_values: np.ndarray,
     fit_result: dict,
 ) -> np.ndarray:
+    x_values = np.asarray(x_values, dtype=float)
+    positive_x = np.clip(x_values, 1e-12, None)
+    log_x_values = np.log(positive_x)
     model_name = str(fit_result.get("chosen_model", "")).lower()
     if model_name == "normal":
         params = get_model_parameters(fit_result, "normal")
-        return stats.norm.pdf(x_values, loc=params["loc"], scale=params["scale"])
+        return stats.norm.pdf(
+            log_x_values,
+            loc=params["loc"],
+            scale=params["scale"],
+        ) / positive_x
     if model_name == "lognormal":
         params = get_model_parameters(fit_result, "lognormal")
         return stats.lognorm.pdf(
-            x_values,
+            positive_x,
             s=params["shape"],
             loc=params["loc"],
             scale=params["scale"],
@@ -568,30 +581,37 @@ def evaluate_selected_model_pdf(
     if model_name == "gamma":
         params = get_model_parameters(fit_result, "gamma")
         return stats.gamma.pdf(
-            x_values,
+            log_x_values,
             a=params["shape"],
             loc=params["loc"],
             scale=params["scale"],
-        )
+        ) / positive_x
     if model_name == "kde":
-        kde = build_selected_kde(sample_values, fit_result)
-        return kde.evaluate(x_values)
+        kde = build_selected_kde(log_sample_values, fit_result)
+        return kde.evaluate(log_x_values) / positive_x
     return np.full_like(x_values, np.nan, dtype=float)
 
 
 def evaluate_selected_model_cdf(
     x_values: np.ndarray,
-    sample_values: np.ndarray,
+    log_sample_values: np.ndarray,
     fit_result: dict,
 ) -> np.ndarray:
+    x_values = np.asarray(x_values, dtype=float)
+    positive_x = np.clip(x_values, 1e-12, None)
+    log_x_values = np.log(positive_x)
     model_name = str(fit_result.get("chosen_model", "")).lower()
     if model_name == "normal":
         params = get_model_parameters(fit_result, "normal")
-        return stats.norm.cdf(x_values, loc=params["loc"], scale=params["scale"])
+        return stats.norm.cdf(
+            log_x_values,
+            loc=params["loc"],
+            scale=params["scale"],
+        )
     if model_name == "lognormal":
         params = get_model_parameters(fit_result, "lognormal")
         return stats.lognorm.cdf(
-            x_values,
+            positive_x,
             s=params["shape"],
             loc=params["loc"],
             scale=params["scale"],
@@ -599,14 +619,14 @@ def evaluate_selected_model_cdf(
     if model_name == "gamma":
         params = get_model_parameters(fit_result, "gamma")
         return stats.gamma.cdf(
-            x_values,
+            log_x_values,
             a=params["shape"],
             loc=params["loc"],
             scale=params["scale"],
         )
     if model_name == "kde":
-        kde = build_selected_kde(sample_values, fit_result)
-        return np.asarray([kde.integrate_box_1d(-np.inf, value) for value in x_values])
+        kde = build_selected_kde(log_sample_values, fit_result)
+        return np.asarray([kde.integrate_box_1d(-np.inf, value) for value in log_x_values])
     return np.full_like(x_values, np.nan, dtype=float)
 
 
@@ -893,9 +913,9 @@ def plot_probability_model_counts(summary: dict, output_path: Path) -> Path:
     """Bar chart of chosen probability models for remaining missing cells."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     counts = summary.get("model_counts", {})
-    labels = ["normal", "lognormal", "gamma", "kde", "unresolved"]
+    labels = ["normal", "gamma", "kde", "unresolved"]
     values = [int(counts.get(label, 0)) for label in labels]
-    display_labels = ["Normal", "Lognormal", "Gamma", "KDE", "Unresolved"]
+    display_labels = ["Normal", "Gamma", "KDE", "Unresolved"]
 
     fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
     bars = ax.bar(display_labels, values, color=color_sequence(len(display_labels)))

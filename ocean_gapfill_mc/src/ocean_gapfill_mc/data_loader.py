@@ -53,6 +53,15 @@ def load_raw_chlorophyll_data(config) -> xr.DataArray:
         )
 
     chlorophyll = dataset[variable_name]
+    # explicitly mask fill values before anything else.
+    # xarray sometimes leaves _FillValue unmasked when chunks are used.
+    fill_value = chlorophyll.attrs.get("_FillValue", None)
+    if fill_value is not None:
+        chlorophyll = chlorophyll.where(chlorophyll != fill_value)
+
+    # Also mask any physically impossible values for chlorophyll
+    chlorophyll = chlorophyll.where(chlorophyll > 0)
+    chlorophyll = chlorophyll.where(chlorophyll < 200)  # 200 mg/m3 is an extreme hard cap
     chlorophyll = ensure_datetime_time(chlorophyll)
     chlorophyll = crop_to_study_area(chlorophyll, config)
     validate_required_dimensions(chlorophyll)
@@ -87,6 +96,15 @@ def load_preprocessed_chlorophyll_data(config) -> xr.DataArray:
         )
 
     chlorophyll = dataset[variable_name]
+    # explicitly mask fill values before anything else.
+    # xarray sometimes leaves _FillValue unmasked when chunks are used.
+    fill_value = chlorophyll.attrs.get("_FillValue", None)
+    if fill_value is not None:
+        chlorophyll = chlorophyll.where(chlorophyll != fill_value)
+
+    # Also mask any physically impossible values for chlorophyll
+    chlorophyll = chlorophyll.where(chlorophyll > 0)
+    chlorophyll = chlorophyll.where(chlorophyll < 200)  # 200 mg/m3 is an extreme hard cap
     chlorophyll = ensure_datetime_time(chlorophyll)
     validate_required_dimensions(chlorophyll)
     print_basic_metadata(chlorophyll, preprocessed_path)

@@ -32,7 +32,7 @@ def regrid_to_target_latlon(
         lat=lat_factor,
         lon=lon_factor,
         boundary="trim"
-    ).mean()
+    ).mean(skipna=True)
 
     summary = build_spatial_summary(prepared, regridded)
 

@@ -324,21 +324,24 @@ def fit_lognormal_distribution(sample_values: np.ndarray) -> dict:
 
 # Take only positive values (gamma requires > 0) => Clean the sample => Check minimum sample size (on positive values) => If too small → fail => Check variance => If values are almost constant → fail => Estimate gamma parameters (shape, loc, scale) => Validate fitted parameters => Apply KS test to evaluate fit => Return result (success or failure with reason)
 def fit_gamma_distribution(sample_values: np.ndarray) -> dict:
-    """Fit a gamma distribution using positive values only."""
-    positive_values = sample_values[sample_values > 0]
-    positive_values = np.asarray(positive_values, dtype=float)
-    positive_values = positive_values[np.isfinite(positive_values)]
+    """Fit a gamma distribution to log-transformed chlorophyll values.
 
-    sample_size = int(positive_values.size)
+    The sample is already in log-space. Gamma can model those values when
+    `loc` is estimated freely, so we do not drop negative log values.
+    """
+    log_values = np.asarray(sample_values, dtype=float)
+    log_values = log_values[np.isfinite(log_values)]
+
+    sample_size = int(log_values.size)
     if sample_size < MIN_PARAMETRIC_SAMPLE_SIZE:
-        return failed_model_result("insufficient_positive_values", sample_size)
+        return failed_model_result("insufficient_sample_size", sample_size)
 
-    std = float(np.std(positive_values))
+    std = float(np.std(log_values))
     if not np.isfinite(std) or std < MIN_POSITIVE_VARIANCE:
-        return failed_model_result("low_variance_positive_values", sample_size)
+        return failed_model_result("low_variance_sample_values", sample_size)
 
     try:
-        shape, loc, scale = stats.gamma.fit(positive_values, floc=0.0)
+        shape, loc, scale = stats.gamma.fit(log_values)
     except Exception as exc:
         return failed_model_result(f"gamma_fit_failed: {exc}", sample_size)
 
@@ -353,7 +356,7 @@ def fit_gamma_distribution(sample_values: np.ndarray) -> dict:
 
     try:
         ks_statistic, p_value = stats.kstest(
-            positive_values,
+            log_values,
             "gamma",
             args=(shape, loc, scale),
         )
@@ -373,7 +376,7 @@ def fit_gamma_distribution(sample_values: np.ndarray) -> dict:
         },
         "ks_statistic": float(ks_statistic),
         "p_value": float(p_value),
-        "uses_positive_values_only": True,
+        "uses_log_space_values": True,
     }
 
 # Standard format to report failure of a model (Why particular model failed, not for all)
@@ -391,7 +394,6 @@ def failed_model_result(reason: str, sample_size: int | None = None) -> dict:
 def build_insufficient_sample_stats(sample_size: int | None = None) -> dict:
     return {
         "normal": failed_model_result("insufficient_sample_size", sample_size),
-        "lognormal": failed_model_result("insufficient_sample_size", sample_size),
         "gamma": failed_model_result("insufficient_sample_size", sample_size),
     }
 
@@ -401,7 +403,6 @@ def summarize_full_fit_results(results: list[dict]) -> dict:
     """Summarize full-dataset fitting coverage and model usage."""
     counts = {
         "normal": 0,
-        "lognormal": 0,
         "gamma": 0,
         "kde": 0,
         "unresolved": 0,
@@ -413,9 +414,7 @@ def summarize_full_fit_results(results: list[dict]) -> dict:
             chosen_model = "unresolved"
         counts[chosen_model] += 1
 
-    successfully_modeled = (
-        counts["normal"] + counts["lognormal"] + counts["gamma"] + counts["kde"]
-    )
+    successfully_modeled = counts["normal"] + counts["gamma"] + counts["kde"]
 
     return {
         "total_remaining_missing_cells": len(results),

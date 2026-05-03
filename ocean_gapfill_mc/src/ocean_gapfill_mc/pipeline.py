@@ -116,6 +116,20 @@ def run_pipeline(config_path: Path) -> None:
         config.target_grid_resolution,
     )
     regridded, regrid_summary = regrid_to_target_latlon(dataset, config)
+    # Post-regrid sanity checks: log basic stats and warn if extreme percentiles
+    finite_vals = regridded.values[np.isfinite(regridded.values)]
+    if len(finite_vals) > 0:
+        p99 = np.percentile(finite_vals, 99)
+        logger.info(
+            "Post-regrid sanity: median=%.4f, p99=%.4f, max=%.4f",
+            np.median(finite_vals), p99, float(finite_vals.max()),
+        )
+        if p99 > 50:
+            logger.warning(
+                "POST-REGRID p99=%.1f mg/m3 — likely fill values not masked. "
+                "Check _FillValue masking in data_loader.py.",
+                p99,
+            )
     regridded_support, _ = regrid_to_target_latlon(
         raw_observation_support,
         config,
