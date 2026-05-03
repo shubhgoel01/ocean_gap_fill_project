@@ -27,6 +27,10 @@ class AppConfig:
     monte_carlo_simulations: int = 10
     ks_pvalue_threshold: float = 0.05
     save_reconstructed_datasets: bool = True
+    validation_mask_percent: float = 0.20
+    validation_num_pairs: int = 5
+    validation_random_seed: int = 42
+    validation_season_timesteps: dict[str, list[int]] | None = None
     config_path: str | None = None
     config_directory: str | None = None
 
@@ -55,6 +59,10 @@ class AppConfig:
     def datasets_dir(self) -> str:
         return str(Path(self.output_directory) / "datasets")
 
+    @property
+    def validation_dir(self) -> str:
+        return str(Path(self.output_directory) / "validation")
+
     def output_directories(self) -> list[str]:
         return [
             self.output_directory,
@@ -64,6 +72,7 @@ class AppConfig:
             self.reconstructed_dir,
             self.plots_dir,
             self.datasets_dir,
+            self.validation_dir,
         ]
 
 
@@ -119,6 +128,7 @@ def validate_config(raw_config: dict, config_path: Path | None = None) -> AppCon
         str(Path(config_path).expanduser().resolve()) if config_path is not None else None
     )
     normalized_config["config_directory"] = str(config_base_dir)
+    normalize_validation_aliases(normalized_config)
 
     # Convert dict → structured object
     config = AppConfig(**normalized_config)                 
@@ -144,8 +154,28 @@ def validate_config(raw_config: dict, config_path: Path | None = None) -> AppCon
         raise ValueError("monte_carlo_simulations must be a positive integer.")
     if not 0.0 <= config.ks_pvalue_threshold <= 1.0:
         raise ValueError("ks_pvalue_threshold must be between 0 and 1.")
+    if not 0.0 < config.validation_mask_percent <= 1.0:
+        raise ValueError("validation_mask_percent must be between 0 and 1.")
+    if config.validation_num_pairs <= 0:
+        raise ValueError("validation_num_pairs must be a positive integer.")
+    if config.validation_season_timesteps is not None:
+        _validate_validation_seasons(config.validation_season_timesteps)
 
     return config
+
+
+def normalize_validation_aliases(config: dict) -> None:
+    """Allow either JSON-style or pseudocode-style validation config names."""
+    aliases = {
+        "MASK_PERCENT": "validation_mask_percent",
+        "NUM_PAIRS": "validation_num_pairs",
+        "RANDOM_SEED": "validation_random_seed",
+        "SEASON_TIMESTEPS": "validation_season_timesteps",
+    }
+    for source, target in aliases.items():
+        if source in config and target not in config:
+            config[target] = config[source]
+        config.pop(source, None)
 
 
 def _validate_non_empty_string(value: str, field_name: str) -> None:
@@ -195,6 +225,25 @@ def _validate_study_area_bounds(bounds: dict[str, float] | None) -> None:
     bounds["latitude_max"] = latitude_max
     bounds["longitude_min"] = longitude_min
     bounds["longitude_max"] = longitude_max
+
+
+def _validate_validation_seasons(seasons: dict[str, list[int]]) -> None:
+    if not isinstance(seasons, dict):
+        raise ValueError("validation_season_timesteps must be a dictionary.")
+    for season_name, timesteps in seasons.items():
+        if not isinstance(season_name, str) or not season_name.strip():
+            raise ValueError("validation season names must be non-empty strings.")
+        if not isinstance(timesteps, list):
+            raise ValueError(f"validation_season_timesteps.{season_name} must be a list.")
+        if len(timesteps) < 2:
+            raise ValueError(
+                f"validation_season_timesteps.{season_name} must contain at least two timesteps."
+            )
+        for timestep in timesteps:
+            if not isinstance(timestep, int) or timestep < 0:
+                raise ValueError(
+                    f"validation_season_timesteps.{season_name} contains an invalid timestep: {timestep}"
+                )
 
 
 def _coerce_float(value, field_name: str) -> float:

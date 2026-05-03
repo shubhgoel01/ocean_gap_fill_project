@@ -11,7 +11,14 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib import ticker
 import numpy as np
+from scipy import stats
 import xarray as xr
+
+from .distribution_fit import (
+    extract_cell_time_series_samples,
+    make_cell_key,
+    make_gaussian_kde_bw_method,
+)
 
 try:
     import cartopy.crs as ccrs
@@ -23,6 +30,7 @@ except ImportError:  # pragma: no cover - cartopy is optional
 
 MAP_COLORMAP = "jet"
 BAR_COLORMAP = "turbo"
+CHLOROPHYLL_LABEL = "Chlorophyll-a concentration (mg m$^{-3}$)"
 
 
 def generate_pipeline_plots(
@@ -189,6 +197,475 @@ def save_data_array_as_dataset(data_array: xr.DataArray, output_path: Path) -> P
     return output_path
 
 
+def generate_selected_cell_fit_plots(
+    data_array: xr.DataArray,
+    selected_fit_results: list[dict],
+    config,
+) -> dict[str, list[str]]:
+    """Create fit-diagnostic plots for selected Monte Carlo-filled cells."""
+    saved_paths: dict[str, list[str]] = {
+        "histogram_pdf": [],
+        "qq": [],
+        "cdf": [],
+        "metadata": [],
+    }
+    for plot_index, fit_result in enumerate(selected_fit_results, start=1):
+        model_name = str(fit_result.get("chosen_model", "unresolved")).lower()
+        if model_name == "unresolved":
+            continue
+
+        sample_values = extract_plot_sample_values(data_array, fit_result)
+        if sample_values.size < 2:
+            continue
+
+        cell_dir = build_selected_cell_plot_dir(config, plot_index)
+        cell_dir.mkdir(parents=True, exist_ok=True)
+        saved_paths["histogram_pdf"].append(
+            str(
+                plot_selected_cell_histogram_pdf(
+                    sample_values,
+                    fit_result,
+                    cell_dir / "histogram_best_fit_pdf.png",
+                )
+            )
+        )
+        qq_path = plot_selected_cell_qq(
+            sample_values,
+            fit_result,
+            cell_dir / "qq_plot.png",
+        )
+        if qq_path is not None:
+            saved_paths["qq"].append(str(qq_path))
+        saved_paths["cdf"].append(
+            str(
+                plot_selected_cell_cdf_comparison(
+                    sample_values,
+                    fit_result,
+                    cell_dir / "cdf_comparison.png",
+                )
+            )
+        )
+        saved_paths["metadata"].append(
+            str(write_selected_cell_metadata(cell_dir, fit_result, sample_values))
+        )
+
+    return saved_paths
+
+
+def generate_selected_cell_uncertainty_plot(
+    reconstructed_datasets: list[xr.DataArray],
+    selected_fit_results: list[dict],
+    config,
+) -> dict[str, str]:
+    """Plot p05-p95 uncertainty intervals and ensemble mean for each selected cell."""
+    if not reconstructed_datasets or not selected_fit_results:
+        return {}
+
+    records = build_selected_cell_uncertainty_records(reconstructed_datasets, selected_fit_results)
+    if not records:
+        return {}
+
+    saved_paths: dict[str, str] = {}
+    for plot_index, record in enumerate(records, start=1):
+        cell_dir = build_selected_cell_plot_dir(config, plot_index)
+        cell_dir.mkdir(parents=True, exist_ok=True)
+        output_path = plot_single_selected_cell_uncertainty_interval(
+            record,
+            cell_dir / "uncertainty_interval.png",
+        )
+        append_uncertainty_metadata(cell_dir, record)
+        saved_paths[f"cell_{plot_index}"] = str(output_path)
+    return saved_paths
+
+
+def build_selected_cell_uncertainty_records(
+    reconstructed_datasets: list[xr.DataArray],
+    selected_fit_results: list[dict],
+) -> list[dict]:
+    """Compute selected-cell uncertainty records from the reconstructed ensemble."""
+    records = []
+    for index, fit_result in enumerate(selected_fit_results, start=1):
+        cell = fit_result["cell"]
+        time_index = int(cell["time_index"])
+        lat_index = int(cell["lat_index"])
+        lon_index = int(cell["lon_index"])
+        values = np.asarray(
+            [
+                dataset.values[time_index, lat_index, lon_index]
+                for dataset in reconstructed_datasets
+            ],
+            dtype=float,
+        )
+        finite_values = values[np.isfinite(values)]
+        if finite_values.size == 0:
+            continue
+
+        records.append(
+            {
+                "label": (
+                    f"{index}: lat {float(cell['lat_value']):.2f}, "
+                    f"lon {float(cell['lon_value']):.2f}"
+                ),
+                "cell": cell,
+                "chosen_model": fit_result.get("chosen_model"),
+                "simulation_count": int(len(finite_values)),
+                "mean": float(np.mean(finite_values)),
+                "p05": float(np.percentile(finite_values, 5)),
+                "p95": float(np.percentile(finite_values, 95)),
+            }
+        )
+    return records
+
+
+def plot_single_selected_cell_uncertainty_interval(record: dict, output_path: Path) -> Path:
+    """Plot one selected cell's ensemble mean and p05-p95 interval."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    mean_value = float(record["mean"])
+    p05_value = float(record["p05"])
+    p95_value = float(record["p95"])
+
+    fig, ax = plt.subplots(figsize=(5.6, 5), constrained_layout=True)
+    ax.vlines(
+        0.0,
+        p05_value,
+        p95_value,
+        color=plt.get_cmap(BAR_COLORMAP)(0.24),
+        linewidth=7.0,
+        alpha=0.78,
+        label="p05-p95 interval",
+    )
+    ax.scatter([0.0], [mean_value], color="#111111", s=68, zorder=3, label="Ensemble mean")
+    ax.scatter([0.0], [p05_value], marker="_", s=220, color="#2b6cb0", zorder=4, label="p05")
+    ax.scatter([0.0], [p95_value], marker="_", s=220, color="#c2410c", zorder=4, label="p95")
+
+    padding = max((p95_value - p05_value) * 0.22, abs(mean_value) * 0.04, 0.01)
+    ax.set_xlim(-0.55, 0.55)
+    ax.set_ylim(max(0.0, p05_value - padding), p95_value + padding)
+    ax.set_xticks([0.0])
+    ax.set_xticklabels(["Selected cell"])
+    ax.set_title(f"Uncertainty Interval\n{format_cell_location(record['cell'])}")
+    ax.set_ylabel(CHLOROPHYLL_LABEL)
+    ax.legend()
+    ax.grid(True, axis="y", linewidth=0.4, alpha=0.35)
+
+    fig.savefig(output_path, dpi=160)
+    plt.close(fig)
+    return output_path
+
+
+def write_selected_cell_metadata(
+    cell_dir: Path,
+    fit_result: dict,
+    sample_values: np.ndarray,
+) -> Path:
+    """Write selected-cell model metadata as plain text."""
+    metadata_path = cell_dir / "metadata.txt"
+    cell = fit_result["cell"]
+    model_name = str(fit_result.get("chosen_model", "unknown")).lower()
+    model_stats = fit_result.get("candidate_model_statistics", {}).get(model_name, {})
+    parameters = model_stats.get("parameters")
+    lines = [
+        "Selected Cell Metadata",
+        "======================",
+        f"Cell key: {make_cell_key(cell)}",
+        f"Time index: {cell['time_index']}",
+        f"Time value: {cell['time_value']}",
+        f"Latitude index: {cell['lat_index']}",
+        f"Latitude: {float(cell['lat_value']):.6f} degrees_north",
+        f"Longitude index: {cell['lon_index']}",
+        f"Longitude: {float(cell['lon_value']):.6f} degrees_east",
+        f"Selected model: {format_model_name(model_name)}",
+        f"Fitting sample count: {int(sample_values.size)}",
+        f"Unit: chlorophyll-a concentration, mg m^-3",
+    ]
+    if fit_result.get("chosen_p_value") is not None:
+        lines.append(f"Chosen-model KS p-value: {float(fit_result['chosen_p_value']):.6g}")
+    if model_stats.get("ks_statistic") is not None:
+        lines.append(f"Chosen-model KS statistic: {float(model_stats['ks_statistic']):.6g}")
+    if parameters:
+        lines.append("Fitted parameters:")
+        for name, value in parameters.items():
+            lines.append(f"  {name}: {float(value):.10g}")
+
+    metadata_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return metadata_path
+
+
+def append_uncertainty_metadata(cell_dir: Path, record: dict) -> Path:
+    """Append selected-cell uncertainty metadata as plain text."""
+    metadata_path = cell_dir / "metadata.txt"
+    lines = [
+        "",
+        "Monte Carlo Uncertainty",
+        "=======================",
+        f"Simulation count with finite values: {record['simulation_count']}",
+        f"Ensemble mean: {record['mean']:.10g} mg m^-3",
+        f"5th percentile: {record['p05']:.10g} mg m^-3",
+        f"95th percentile: {record['p95']:.10g} mg m^-3",
+        f"Uncertainty interval: [{record['p05']:.10g}, {record['p95']:.10g}] mg m^-3",
+    ]
+    with metadata_path.open("a", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
+    return metadata_path
+
+
+def extract_plot_sample_values(data_array: xr.DataArray, fit_result: dict) -> np.ndarray:
+    """Use the same support values as fitting for the selected model."""
+    sample_values = extract_cell_time_series_samples(data_array, fit_result["cell"])
+    sample_values = np.asarray(sample_values, dtype=float)
+    sample_values = sample_values[np.isfinite(sample_values)]
+
+    model_name = str(fit_result.get("chosen_model", "")).lower()
+    if model_name in {"lognormal", "gamma"}:
+        sample_values = sample_values[sample_values > 0.0]
+    return sample_values
+
+
+def plot_selected_cell_histogram_pdf(
+    sample_values: np.ndarray,
+    fit_result: dict,
+    output_path: Path,
+) -> Path:
+    """Plot sample histogram with only the selected best-fit PDF overlaid."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    model_name = str(fit_result.get("chosen_model", "unknown")).lower()
+    x_values = build_pdf_x_values(sample_values)
+    pdf_values = evaluate_selected_model_pdf(x_values, sample_values, fit_result)
+
+    fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
+    ax.hist(
+        sample_values,
+        bins=choose_histogram_bins(sample_values),
+        density=True,
+        alpha=0.68,
+        color=plt.get_cmap(BAR_COLORMAP)(0.22),
+        edgecolor="white",
+        linewidth=0.7,
+        label="Observed samples",
+    )
+    ax.plot(
+        x_values,
+        pdf_values,
+        color="#111111",
+        linewidth=2.2,
+        label=f"{format_model_name(model_name)} PDF",
+    )
+    ax.set_title(f"Histogram + Best-Fit PDF\n{format_cell_location(fit_result['cell'])} | {format_model_name(model_name)}")
+    ax.set_xlabel(CHLOROPHYLL_LABEL)
+    ax.set_ylabel("Density")
+    ax.legend()
+    ax.grid(True, axis="y", linewidth=0.4, alpha=0.35)
+
+    fig.savefig(output_path, dpi=160)
+    plt.close(fig)
+    return output_path
+
+
+def plot_selected_cell_qq(
+    sample_values: np.ndarray,
+    fit_result: dict,
+    output_path: Path,
+) -> Path | None:
+    """Plot Q-Q diagnostics for supported parametric selected models."""
+    model_name = str(fit_result.get("chosen_model", "")).lower()
+    probplot_dist, sparams = get_probplot_distribution(model_name, fit_result)
+    if probplot_dist is None:
+        return None
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(6, 6), constrained_layout=True)
+    stats.probplot(
+        sample_values,
+        dist=probplot_dist,
+        sparams=sparams,
+        plot=ax,
+    )
+    ax.get_lines()[0].set_markerfacecolor(plt.get_cmap(BAR_COLORMAP)(0.28))
+    ax.get_lines()[0].set_markeredgecolor("#333333")
+    ax.get_lines()[1].set_color("#111111")
+    ax.get_lines()[1].set_linewidth(1.8)
+    ax.set_title(f"Q-Q Plot\n{format_cell_location(fit_result['cell'])} | {format_model_name(model_name)}")
+    ax.set_xlabel("Theoretical quantiles")
+    ax.set_ylabel("Ordered observed values")
+    ax.grid(True, linewidth=0.4, alpha=0.35)
+
+    fig.savefig(output_path, dpi=160)
+    plt.close(fig)
+    return output_path
+
+
+def plot_selected_cell_cdf_comparison(
+    sample_values: np.ndarray,
+    fit_result: dict,
+    output_path: Path,
+) -> Path:
+    """Plot empirical CDF against the selected theoretical CDF."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    model_name = str(fit_result.get("chosen_model", "unknown")).lower()
+    sorted_values = np.sort(sample_values)
+    empirical_cdf = np.arange(1, sorted_values.size + 1, dtype=float) / sorted_values.size
+    theoretical_cdf = evaluate_selected_model_cdf(sorted_values, sample_values, fit_result)
+
+    fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
+    ax.step(
+        sorted_values,
+        empirical_cdf,
+        where="post",
+        linewidth=2.0,
+        color=plt.get_cmap(BAR_COLORMAP)(0.22),
+        label="Empirical CDF",
+    )
+    ax.plot(
+        sorted_values,
+        theoretical_cdf,
+        linewidth=2.2,
+        color="#111111",
+        label=f"{format_model_name(model_name)} CDF",
+    )
+    ax.set_title(f"CDF Comparison\n{format_cell_location(fit_result['cell'])} | {format_model_name(model_name)}")
+    ax.set_xlabel(CHLOROPHYLL_LABEL)
+    ax.set_ylabel("Cumulative probability")
+    ax.set_ylim(-0.03, 1.03)
+    ax.legend()
+    ax.grid(True, linewidth=0.4, alpha=0.35)
+
+    fig.savefig(output_path, dpi=160)
+    plt.close(fig)
+    return output_path
+
+
+def build_pdf_x_values(sample_values: np.ndarray) -> np.ndarray:
+    finite_values = np.asarray(sample_values, dtype=float)
+    finite_values = finite_values[np.isfinite(finite_values)]
+    minimum = float(np.min(finite_values))
+    maximum = float(np.max(finite_values))
+    if np.isclose(minimum, maximum):
+        padding = max(abs(minimum) * 0.1, 0.01)
+    else:
+        padding = (maximum - minimum) * 0.1
+    lower = max(0.0, minimum - padding)
+    upper = maximum + padding
+    return np.linspace(lower, upper, 250)
+
+
+def evaluate_selected_model_pdf(
+    x_values: np.ndarray,
+    sample_values: np.ndarray,
+    fit_result: dict,
+) -> np.ndarray:
+    model_name = str(fit_result.get("chosen_model", "")).lower()
+    if model_name == "normal":
+        params = get_model_parameters(fit_result, "normal")
+        return stats.norm.pdf(x_values, loc=params["loc"], scale=params["scale"])
+    if model_name == "lognormal":
+        params = get_model_parameters(fit_result, "lognormal")
+        return stats.lognorm.pdf(
+            x_values,
+            s=params["shape"],
+            loc=params["loc"],
+            scale=params["scale"],
+        )
+    if model_name == "gamma":
+        params = get_model_parameters(fit_result, "gamma")
+        return stats.gamma.pdf(
+            x_values,
+            a=params["shape"],
+            loc=params["loc"],
+            scale=params["scale"],
+        )
+    if model_name == "kde":
+        kde = build_selected_kde(sample_values, fit_result)
+        return kde.evaluate(x_values)
+    return np.full_like(x_values, np.nan, dtype=float)
+
+
+def evaluate_selected_model_cdf(
+    x_values: np.ndarray,
+    sample_values: np.ndarray,
+    fit_result: dict,
+) -> np.ndarray:
+    model_name = str(fit_result.get("chosen_model", "")).lower()
+    if model_name == "normal":
+        params = get_model_parameters(fit_result, "normal")
+        return stats.norm.cdf(x_values, loc=params["loc"], scale=params["scale"])
+    if model_name == "lognormal":
+        params = get_model_parameters(fit_result, "lognormal")
+        return stats.lognorm.cdf(
+            x_values,
+            s=params["shape"],
+            loc=params["loc"],
+            scale=params["scale"],
+        )
+    if model_name == "gamma":
+        params = get_model_parameters(fit_result, "gamma")
+        return stats.gamma.cdf(
+            x_values,
+            a=params["shape"],
+            loc=params["loc"],
+            scale=params["scale"],
+        )
+    if model_name == "kde":
+        kde = build_selected_kde(sample_values, fit_result)
+        return np.asarray([kde.integrate_box_1d(-np.inf, value) for value in x_values])
+    return np.full_like(x_values, np.nan, dtype=float)
+
+
+def get_probplot_distribution(model_name: str, fit_result: dict) -> tuple[str | None, tuple]:
+    if model_name == "normal":
+        params = get_model_parameters(fit_result, "normal")
+        return "norm", (params["loc"], params["scale"])
+    if model_name == "lognormal":
+        params = get_model_parameters(fit_result, "lognormal")
+        return "lognorm", (params["shape"], params["loc"], params["scale"])
+    if model_name == "gamma":
+        params = get_model_parameters(fit_result, "gamma")
+        return "gamma", (params["shape"], params["loc"], params["scale"])
+    return None, ()
+
+
+def get_model_parameters(fit_result: dict, model_name: str) -> dict:
+    return fit_result["candidate_model_statistics"][model_name]["parameters"]
+
+
+def build_selected_kde(sample_values: np.ndarray, fit_result: dict):
+    kde_status = fit_result.get("candidate_model_statistics", {}).get("kde", {})
+    bandwidth = kde_status.get("bandwidth")
+    if bandwidth is None:
+        return stats.gaussian_kde(sample_values)
+    return stats.gaussian_kde(
+        sample_values,
+        bw_method=make_gaussian_kde_bw_method(sample_values, float(bandwidth)),
+    )
+
+
+def choose_histogram_bins(sample_values: np.ndarray) -> str | int:
+    if sample_values.size < 10:
+        return max(3, int(sample_values.size))
+    return "auto"
+
+
+def build_selected_cell_plot_dir(config, plot_index: int) -> Path:
+    return Path(config.sampled_cells_dir) / "plots" / f"cell_{plot_index}"
+
+
+def format_cell_location(cell: dict) -> str:
+    return (
+        f"lat {float(cell['lat_value']):.3f}, "
+        f"lon {float(cell['lon_value']):.3f}, "
+        f"time {cell['time_value']}"
+    )
+
+
+def format_model_name(model_name: str) -> str:
+    labels = {
+        "normal": "Normal",
+        "lognormal": "Lognormal",
+        "gamma": "Gamma",
+        "kde": "KDE",
+    }
+    return labels.get(model_name.lower(), model_name.title())
+
+
 def plot_missing_percentage_map(
     data_array: xr.DataArray,
     title: str,
@@ -227,7 +704,7 @@ def plot_chlorophyll_mean_map(
         mean_chlorophyll,
         title,
         output_path,
-        colorbar_label="Chlorophyll concentration (mg m$^{-3}$)",
+        colorbar_label=CHLOROPHYLL_LABEL,
         cmap=MAP_COLORMAP,
         vmin=0.0,
         vmax=vmax,

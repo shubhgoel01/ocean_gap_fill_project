@@ -23,6 +23,16 @@ def preprocess_data(config_path: Path, output_path: Path | None = None, overwrit
     resolved_output.parent.mkdir(parents=True, exist_ok=True)
 
     chlorophyll = load_raw_chlorophyll_data(config)
+    # Ensure consistent coordinate ordering: time (chronological), then lat, then lon.
+    # Sorting here guarantees downstream steps that rely on integer time indices
+    # (t1/t2) and validation masks see a deterministic ordering.
+    try:
+        chlorophyll = chlorophyll.sortby(["time", "lat", "lon"])
+    except Exception:
+        # Fallback to sequential sorts if bulk sortby isn't supported for some reason
+        chlorophyll = chlorophyll.sortby("time").sortby("lat").sortby("lon")
+    print("Preprocess: sorted dataset by time, lat, lon")
+
     bounds = get_study_area_bounds(config)
     chlorophyll.attrs["preprocessing_note"] = (
         "Merged source files and cropped to the configured study area: "
