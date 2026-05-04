@@ -230,9 +230,8 @@ def generate_selected_cell_fit_plots(
         if chosen_model not in {"normal", "lognormal", "gamma", "kde"}:
             continue
 
-        sample_values = extract_cell_time_series_samples(interpolated_data, fit_result["cell"])
-        sample_values = np.asarray(sample_values, dtype=float)
-        sample_values = sample_values[np.isfinite(sample_values)]
+        sample_records = extract_cell_time_series_records(interpolated_data, fit_result["cell"])
+        sample_values = np.asarray([record["value"] for record in sample_records], dtype=float)
         if sample_values.size == 0:
             continue
 
@@ -268,6 +267,7 @@ def generate_selected_cell_fit_plots(
         metadata_path = write_selected_cell_metadata(
             fit_result,
             sample_values,
+            sample_records,
             uncertainty,
             cell_dir / "metadata.txt",
         )
@@ -416,6 +416,7 @@ def plot_selected_cell_uncertainty(
 def write_selected_cell_metadata(
     fit_result: dict,
     sample_values: np.ndarray,
+    sample_records: list[dict],
     uncertainty: dict | None,
     output_path: Path,
 ) -> Path:
@@ -476,11 +477,39 @@ def write_selected_cell_metadata(
         "  qq_plot.png: Q-Q plot using scipy.stats.probplot and the selected distribution",
             "  cdf_comparison.png: empirical CDF compared with the selected theoretical CDF",
             "  uncertainty_interval.png: mean with percentile uncertainty interval",
+            "",
+            "Finite chlorophyll-a values used for distribution fitting:",
+            "  index,time,value_mg_m^-3",
         ]
     )
+    for record in sample_records:
+        lines.append(
+            f"  {record['time_index']},{record['time_value']},{record['value']:.8g}"
+        )
 
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return output_path
+
+
+def extract_cell_time_series_records(data_array: xr.DataArray, cell: dict) -> list[dict]:
+    """Return finite time-series values at one selected cell location."""
+    lat_index = int(cell["lat_index"])
+    lon_index = int(cell["lon_index"])
+    series = np.asarray(data_array.isel(lat=lat_index, lon=lon_index).values, dtype=float)
+    time_values = data_array["time"].values
+
+    records = []
+    for time_index, value in enumerate(series):
+        if not np.isfinite(value):
+            continue
+        records.append(
+            {
+                "time_index": int(time_index),
+                "time_value": str(time_values[time_index]),
+                "value": float(value),
+            }
+        )
+    return records
 
 
 def build_distribution_x_values(sample_values: np.ndarray) -> np.ndarray:
