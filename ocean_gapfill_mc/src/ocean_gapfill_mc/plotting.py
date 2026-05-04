@@ -41,8 +41,11 @@ def generate_pipeline_plots(
     config,
 ) -> dict[str, str]:
     """Create all standard pipeline plots and return their output paths."""
-    output_dir = Path(config.plots_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    missing_percentage_dir = Path(config.missing_percentage_dir)
+    diagnostics_dir = Path(config.pipeline_diagnostics_dir)
+    chlorophyll_maps_dir = Path(config.chlorophyll_maps_dir)
+    for output_dir in (missing_percentage_dir, diagnostics_dir, chlorophyll_maps_dir):
+        output_dir.mkdir(parents=True, exist_ok=True)
 
     final_mean_reconstruction = build_reconstruction_mean(reconstructed_datasets)
     shared_chlorophyll_vmax = compute_shared_chlorophyll_vmax(
@@ -55,7 +58,7 @@ def generate_pipeline_plots(
             plot_missing_percentage_map(
                 raw_data,
                 "Raw Data Missing Percentage",
-                output_dir / "missing_percentage_raw_data.png",
+                missing_percentage_dir / "raw_data.png",
                 config,
             )
         ),
@@ -63,7 +66,7 @@ def generate_pipeline_plots(
             plot_missing_percentage_map(
                 interpolated_data,
                 "After Interpolation Missing Percentage",
-                output_dir / "missing_percentage_after_interpolation.png",
+                missing_percentage_dir / "after_interpolation.png",
                 config,
             )
         ),
@@ -71,33 +74,33 @@ def generate_pipeline_plots(
             plot_missing_percentage_map(
                 final_mean_reconstruction,
                 "Final Mean Reconstruction Missing Percentage",
-                output_dir / "missing_percentage_final_mean_reconstruction.png",
+                missing_percentage_dir / "final_mean_reconstruction.png",
                 config,
             )
         ),
         "missing_cells_by_stage": str(
             plot_missing_cells_by_stage(
                 nan_stage_summaries,
-                output_dir / "missing_cells_by_stage.png",
+                diagnostics_dir / "missing_cells_by_stage.png",
             )
         ),
         "interpolation_contribution": str(
             plot_interpolation_contribution(
                 interpolation_summary,
-                output_dir / "interpolation_contribution.png",
+                diagnostics_dir / "interpolation_contribution.png",
             )
         ),
         "probability_model_counts": str(
             plot_probability_model_counts(
                 fit_summary,
-                output_dir / "probability_model_counts.png",
+                diagnostics_dir / "probability_model_counts.png",
             )
         ),
         "raw_chlorophyll_mean": str(
             plot_chlorophyll_mean_map(
                 raw_data,
                 "Satellite-Derived Chlorophyll",
-                output_dir / "satellite_derived_raw_mean_chlorophyll.png",
+                chlorophyll_maps_dir / "satellite_derived_raw_mean_chlorophyll.png",
                 config,
                 vmax=shared_chlorophyll_vmax,
             )
@@ -106,7 +109,7 @@ def generate_pipeline_plots(
             plot_chlorophyll_mean_map(
                 final_mean_reconstruction,
                 "Reconstructed Chlorophyll",
-                output_dir / "final_reconstructed_mean_chlorophyll.png",
+                chlorophyll_maps_dir / "final_reconstructed_mean_chlorophyll.png",
                 config,
                 vmax=shared_chlorophyll_vmax,
             )

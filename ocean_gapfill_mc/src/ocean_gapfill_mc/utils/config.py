@@ -61,8 +61,20 @@ class AppConfig:
         return str(Path(self.output_directory) / "reconstructed")
 
     @property
-    def plots_dir(self) -> str:
-        return str(Path(self.output_directory) / "plots")
+    def annual_cycle_dir(self) -> str:
+        return str(Path(self.output_directory) / "annual_cycle")
+
+    @property
+    def missing_percentage_dir(self) -> str:
+        return str(Path(self.output_directory) / "missing_percentage")
+
+    @property
+    def pipeline_diagnostics_dir(self) -> str:
+        return str(Path(self.output_directory) / "pipeline_diagnostics")
+
+    @property
+    def chlorophyll_maps_dir(self) -> str:
+        return str(Path(self.output_directory) / "chlorophyll_maps")
 
     @property
     def datasets_dir(self) -> str:
@@ -74,7 +86,10 @@ class AppConfig:
             self.logs_dir,
             self.sampled_cells_dir,
             self.reconstructed_dir,
-            self.plots_dir,
+            self.annual_cycle_dir,
+            self.missing_percentage_dir,
+            self.pipeline_diagnostics_dir,
+            self.chlorophyll_maps_dir,
             self.datasets_dir,
         ]
 

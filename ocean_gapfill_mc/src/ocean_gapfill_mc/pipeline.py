@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 from pathlib import Path
 import random
@@ -74,6 +75,28 @@ def extract_interpolation_summary(data_array) -> dict:
     if isinstance(raw_summary, dict):
         return raw_summary
     return {"raw_interpolation_summary": raw_summary}
+
+
+def generate_annual_cycle_plots_from_script(config) -> dict[str, str]:
+    """Run the script-based regional annual-cycle plotting step."""
+    if not config.config_directory:
+        logger = get_logger(__name__)
+        logger.warning("Skipping annual-cycle plots because config_directory is unavailable.")
+        return {}
+
+    script_path = Path(config.config_directory).parent / "scripts" / "plot_annual_cycles.py"
+    if not script_path.exists():
+        logger = get_logger(__name__)
+        logger.warning("Skipping annual-cycle plots because %s was not found.", script_path)
+        return {}
+
+    spec = importlib.util.spec_from_file_location("plot_annual_cycles", script_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load annual-cycle plotting script: {script_path}")
+
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.generate_annual_cycle_outputs(config)
 
 
 def run_pipeline(config_path: Path) -> None:
@@ -243,6 +266,7 @@ def run_pipeline(config_path: Path) -> None:
         selected_uncertainty_summary=uncertainty["selected_cell_summary"],
         config=config,
     )
+    annual_cycle_paths = generate_annual_cycle_plots_from_script(config)
     logger.info("Initial dataset baseline summary: %s", initial_stats)
     logger.info("Raw-load NaN summary: %s", raw_nan_summary)
     logger.info("Inspection summary after regridding: %s", before_stats)
@@ -264,6 +288,7 @@ def run_pipeline(config_path: Path) -> None:
     logger.info("Final reconstruction NaN summary: %s", final_reconstruction_nan_summary)
     logger.info("Generated NetCDF dataset outputs: %s", dataset_paths)
     logger.info("Generated plot outputs: %s", plot_paths)
+    logger.info("Generated annual-cycle outputs: %s", annual_cycle_paths)
     logger.info("Step 13/13: pipeline outputs finalized")
     logger.info("Pipeline finished successfully.")
 
