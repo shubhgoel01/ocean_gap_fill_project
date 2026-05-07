@@ -1,8 +1,9 @@
 {
   "input_directory": "../data/raw",
+  "raw_file_pattern": "*.nc4",
   "variable_name": "chlor_a",
-  "latitude_dim": "lat",
-  "longitude_dim": "lon",
+  "latitude_dim": "latitude",
+  "longitude_dim": "longitude",
   "time_dim": "time",
   "study_area_bounds": {
     "latitude_min": -30.0,
@@ -10,6 +11,15 @@
     "longitude_min": 40.0,
     "longitude_max": 120.0
   },
+  "comparison_year": 2018,
+  "filled_data_directory": "../data/processed",
+  "filled_data_pattern": "filled_data_for_year_2018.nc",
+  "filled_variable_name": "CHL",
+  "reconstructed_mean_data_file": null,
+  "enable_study_area_crop": false,
+  "enable_8day_compositing": true,
+  "composite_window_size": 8,
+  "composite_min_valid_fraction": 0.6,
   "output_directory": "../outputs",
   "preprocessed_data_file": "../data/processed/tropical_indian_ocean_chlor_a.nc",
   "target_grid_resolution": 1.0,
@@ -36,5 +46,10 @@
   "chlorophyll_colorbar_percentile": 98.0,
   "chlorophyll_colorbar_step": 0.05,
   "map_tick_spacing": 10.0,
+  "bloom_smoothing_window": 3,
+  "bloom_threshold_method": "median_multiplier",
+  "bloom_threshold_multiplier": 1.05,
+  "bloom_threshold_percentile": 60.0,
+  "bloom_detection_year": 2022,
   "save_reconstructed_datasets": true
 }

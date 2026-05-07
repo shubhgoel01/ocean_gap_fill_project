@@ -17,7 +17,17 @@ class AppConfig:
     longitude_dim: str
     time_dim: str
     output_directory: str
+    raw_file_pattern: str | list[str] | tuple[str, ...] | None = None
     study_area_bounds: dict[str, float] | None = None
+    comparison_year: int | None = None
+    filled_data_directory: Path | None = None
+    filled_data_pattern: str | list[str] | tuple[str, ...] = "*.nc*"
+    filled_variable_name: str | None = None
+    reconstructed_mean_data_file: Path | None = None
+    enable_study_area_crop: bool = False
+    enable_8day_compositing: bool = True
+    composite_window_size: int = 8
+    composite_min_valid_fraction: float = 0.6
     preprocessed_data_file: Path | None = None
     target_grid_resolution: float = 1.0
     random_seed: int = 42
@@ -43,6 +53,11 @@ class AppConfig:
     chlorophyll_colorbar_percentile: float = 98.0
     chlorophyll_colorbar_step: float = 0.05
     map_tick_spacing: float = 10.0
+    bloom_smoothing_window: int = 3
+    bloom_threshold_method: str = "median_multiplier"
+    bloom_threshold_multiplier: float = 1.05
+    bloom_threshold_percentile: float = 60.0
+    bloom_detection_year: int | None = None
     save_reconstructed_datasets: bool = True
     config_path: str | None = None
     config_directory: str | None = None
@@ -63,6 +78,18 @@ class AppConfig:
     @property
     def annual_cycle_dir(self) -> str:
         return str(Path(self.output_directory) / "annual_cycle")
+
+    @property
+    def pre_processing_dir(self) -> str:
+        return str(Path(self.output_directory) / "pre_processing")
+
+    @property
+    def filled_data_comparison_dir(self) -> str:
+        return str(Path(self.output_directory) / "filled_data_comparison")
+
+    @property
+    def bloom_dir(self) -> str:
+        return str(Path(self.output_directory) / "bloom")
 
     @property
     def missing_percentage_dir(self) -> str:
@@ -87,6 +114,9 @@ class AppConfig:
             self.sampled_cells_dir,
             self.reconstructed_dir,
             self.annual_cycle_dir,
+            self.pre_processing_dir,
+            self.filled_data_comparison_dir,
+            self.bloom_dir,
             self.missing_percentage_dir,
             self.pipeline_diagnostics_dir,
             self.chlorophyll_maps_dir,
@@ -141,6 +171,22 @@ def validate_config(raw_config: dict, config_path: Path | None = None) -> AppCon
         )
     else:
         normalized_config["preprocessed_data_file"] = None
+    if normalized_config.get("filled_data_directory"):
+        normalized_config["filled_data_directory"] = _resolve_config_path(
+            normalized_config["filled_data_directory"],
+            config_base_dir,
+        )
+    else:
+        normalized_config["filled_data_directory"] = (
+            config_base_dir / "../data/filled_data"
+        ).resolve()
+    if normalized_config.get("reconstructed_mean_data_file"):
+        normalized_config["reconstructed_mean_data_file"] = _resolve_config_path(
+            normalized_config["reconstructed_mean_data_file"],
+            config_base_dir,
+        )
+    else:
+        normalized_config["reconstructed_mean_data_file"] = None
 
     normalized_config["config_path"] = (
         str(Path(config_path).expanduser().resolve()) if config_path is not None else None
@@ -157,6 +203,12 @@ def validate_config(raw_config: dict, config_path: Path | None = None) -> AppCon
     _validate_non_empty_string(config.time_dim, "time_dim")
     _validate_non_empty_string(config.output_directory, "output_directory")
     _validate_study_area_bounds(config.study_area_bounds)
+    _validate_bool(config.enable_study_area_crop, "enable_study_area_crop")
+    _validate_bool(config.enable_8day_compositing, "enable_8day_compositing")
+    if config.composite_window_size <= 0:
+        raise ValueError("composite_window_size must be a positive integer.")
+    if not 0.0 < config.composite_min_valid_fraction <= 1.0:
+        raise ValueError("composite_min_valid_fraction must be greater than 0 and at most 1.")
 
     # Value validation for numeric fields, helps avoid mistakes like "monte_carlo_simulations": -5.
     if config.target_grid_resolution <= 0:
@@ -206,6 +258,13 @@ def validate_config(raw_config: dict, config_path: Path | None = None) -> AppCon
         raise ValueError("chlorophyll_colorbar_step must be positive.")
     if config.map_tick_spacing <= 0:
         raise ValueError("map_tick_spacing must be positive.")
+    if config.bloom_smoothing_window <= 0:
+        raise ValueError("bloom_smoothing_window must be a positive integer.")
+    if config.bloom_threshold_method not in {"median_multiplier", "percentile"}:
+        raise ValueError("bloom_threshold_method must be 'median_multiplier' or 'percentile'.")
+    if config.bloom_threshold_multiplier <= 0:
+        raise ValueError("bloom_threshold_multiplier must be positive.")
+    _validate_percentile(config.bloom_threshold_percentile, "bloom_threshold_percentile")
 
     return config
 
@@ -214,6 +273,12 @@ def _validate_non_empty_string(value: str, field_name: str) -> None:
     """Ensure a config value is a non-empty string."""
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field_name} must be a non-empty string.")
+
+
+def _validate_bool(value: bool, field_name: str) -> None:
+    """Ensure a config value is a boolean."""
+    if not isinstance(value, bool):
+        raise ValueError(f"{field_name} must be true or false.")
 
 
 def _validate_existing_directory(value: Path, field_name: str) -> None:

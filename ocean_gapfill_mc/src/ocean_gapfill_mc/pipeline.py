@@ -15,6 +15,7 @@ from .distribution_fit import (
     extract_selected_fit_results,
     fit_all_missing_cell_distributions,
 )
+from .fill_stage import save_fill_stage_map
 from .inspect_dataset import inspect_phase1_dataset
 from .interpolation import apply_ordered_interpolation
 from .monte_carlo import (
@@ -77,26 +78,57 @@ def extract_interpolation_summary(data_array) -> dict:
     return {"raw_interpolation_summary": raw_summary}
 
 
+def is_preprocessing_regridded(data_array) -> bool:
+    """Return whether the loaded data was already regridded during preprocessing."""
+    value = data_array.attrs.get("preprocessing_regridded", False)
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes"}
+    return bool(value)
+
+
+def extract_preprocessing_regrid_summary(data_array) -> dict:
+    """Return the preprocessing regrid summary when it was stored in NetCDF attrs."""
+    raw_summary = data_array.attrs.get("preprocessing_regrid_summary", {})
+    if isinstance(raw_summary, str):
+        try:
+            return json.loads(raw_summary)
+        except json.JSONDecodeError:
+            return {"raw_preprocessing_regrid_summary": raw_summary}
+    if isinstance(raw_summary, dict):
+        return raw_summary
+    return {"raw_preprocessing_regrid_summary": raw_summary}
+
+
 def generate_annual_cycle_plots_from_script(config) -> dict[str, str]:
     """Run the script-based regional annual-cycle plotting step."""
+    return run_output_script(config, "plot_annual_cycles.py", "generate_annual_cycle_outputs")
+
+
+def generate_bloom_detection_from_script(config) -> dict[str, str]:
+    """Run the script-based bloom detection step."""
+    return run_output_script(config, "bloom_detection.py", "generate_bloom_outputs")
+
+
+def run_output_script(config, script_name: str, function_name: str) -> dict:
+    """Load an output script and call its configured generation function."""
     if not config.config_directory:
         logger = get_logger(__name__)
-        logger.warning("Skipping annual-cycle plots because config_directory is unavailable.")
+        logger.warning("Skipping %s because config_directory is unavailable.", script_name)
         return {}
 
-    script_path = Path(config.config_directory).parent / "scripts" / "plot_annual_cycles.py"
+    script_path = Path(config.config_directory).parent / "scripts" / script_name
     if not script_path.exists():
         logger = get_logger(__name__)
-        logger.warning("Skipping annual-cycle plots because %s was not found.", script_path)
+        logger.warning("Skipping %s because %s was not found.", script_name, script_path)
         return {}
 
-    spec = importlib.util.spec_from_file_location("plot_annual_cycles", script_path)
+    spec = importlib.util.spec_from_file_location(script_path.stem, script_path)
     if spec is None or spec.loader is None:
-        raise ImportError(f"Could not load annual-cycle plotting script: {script_path}")
+        raise ImportError(f"Could not load output script: {script_path}")
 
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.generate_annual_cycle_outputs(config)
+    return getattr(module, function_name)(config)
 
 
 def run_pipeline(config_path: Path) -> None:
@@ -125,23 +157,38 @@ def run_pipeline(config_path: Path) -> None:
         save_outputs=False,
     )
 
-# phase-2 the data is regridded to a common lat-lon grid (config.target_grid_resolution = 1.0 degree), the support mask is also regridded, and NaN stats are re-calculated and logged.
+# phase-2 the data is prepared on the target lat-lon grid. New preprocessed files are
+# already regridded; raw or older preprocessed inputs still fall back to regridding here.
 
-    logger.info(
-        "Step 2/13: regridding to %.3f-degree latitude-longitude grid",
-        config.target_grid_resolution,
-    )
-    regridded, regrid_summary = regrid_to_target_latlon(
-        dataset,
-        config,
-        save_summary=False,
-    )
-    regridded_support, _ = regrid_to_target_latlon(
-        raw_observation_support,
-        config,
-        save_summary=False,
-    )
-    regrid_nan_summary = log_nan_stage(logger, regridded, "spatial regridding")
+    if is_preprocessing_regridded(dataset):
+        logger.info(
+            "Step 2/13: using preprocessed %.3f-degree latitude-longitude grid",
+            config.target_grid_resolution,
+        )
+        regridded = dataset
+        regridded_support = raw_observation_support
+        regrid_summary = extract_preprocessing_regrid_summary(dataset)
+        regrid_nan_summary = log_nan_stage(
+            logger,
+            regridded,
+            "preprocessed regridded data",
+        )
+    else:
+        logger.info(
+            "Step 2/13: regridding to %.3f-degree latitude-longitude grid",
+            config.target_grid_resolution,
+        )
+        regridded, regrid_summary = regrid_to_target_latlon(
+            dataset,
+            config,
+            save_summary=False,
+        )
+        regridded_support, _ = regrid_to_target_latlon(
+            raw_observation_support,
+            config,
+            save_summary=False,
+        )
+        regrid_nan_summary = log_nan_stage(logger, regridded, "spatial regridding")
 
     logger.info("Step 3/13: inspecting dataset after regridding")
     before_stats = inspect_phase1_dataset(
@@ -199,6 +246,12 @@ def run_pipeline(config_path: Path) -> None:
         interpolated,
         reconstructed[0],
         config,
+    )
+    fill_stage_map_path = save_fill_stage_map(
+        regridded,
+        interpolated,
+        reconstructed[0],
+        config.reconstructed_dir,
     )
 
 # Extracts the fit-results for the selected cells without writing metric tables.
@@ -267,6 +320,7 @@ def run_pipeline(config_path: Path) -> None:
         config=config,
     )
     annual_cycle_paths = generate_annual_cycle_plots_from_script(config)
+    bloom_paths = generate_bloom_detection_from_script(config)
     logger.info("Initial dataset baseline summary: %s", initial_stats)
     logger.info("Raw-load NaN summary: %s", raw_nan_summary)
     logger.info("Inspection summary after regridding: %s", before_stats)
@@ -280,6 +334,7 @@ def run_pipeline(config_path: Path) -> None:
     logger.info("Selected-cell distribution fitting results: %s", selected_fit_results)
     logger.info("Monte Carlo reconstruction summary: %s", monte_carlo_summary)
     logger.info("Monte Carlo unresolved cell count: %s", len(monte_carlo_unresolved))
+    logger.info("Fill-stage provenance map: %s", fill_stage_map_path)
     logger.info("Selected-cell Monte Carlo summaries: %s", selected_monte_carlo_summaries)
     logger.info("Uncertainty summary: %s", uncertainty["summary"])
     logger.info("Selected-cell uncertainty summary: %s", uncertainty["selected_cell_summary"])
@@ -289,6 +344,7 @@ def run_pipeline(config_path: Path) -> None:
     logger.info("Generated NetCDF dataset outputs: %s", dataset_paths)
     logger.info("Generated plot outputs: %s", plot_paths)
     logger.info("Generated annual-cycle outputs: %s", annual_cycle_paths)
+    logger.info("Generated bloom detection outputs: %s", bloom_paths)
     logger.info("Step 13/13: pipeline outputs finalized")
     logger.info("Pipeline finished successfully.")
 
