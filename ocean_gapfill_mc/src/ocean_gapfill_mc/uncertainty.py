@@ -111,8 +111,20 @@ def extract_selected_cell_uncertainty_summary(
 ) -> list[dict]:
     """Extract readable uncertainty summaries for selected debug cells."""
     results = []
+    
+    time_axis = post_interpolation_data.get_axis_num("time")
+    lat_axis = post_interpolation_data.get_axis_num("lat")
+    lon_axis = post_interpolation_data.get_axis_num("lon")
+
     for cell in selected_cells:
         time_index, lat_index, lon_index = make_cell_key(cell)
+        
+        idx = [0] * post_interpolation_data.ndim
+        idx[time_axis] = time_index
+        idx[lat_axis] = lat_index
+        idx[lon_axis] = lon_index
+        idx = tuple(idx)
+        
         results.append(
             {
                 "time_index": time_index,
@@ -121,10 +133,10 @@ def extract_selected_cell_uncertainty_summary(
                 "lat_value": cell["lat_value"],
                 "lon_index": lon_index,
                 "lon_value": cell["lon_value"],
-                "mean": float(mean_map[time_index, lat_index, lon_index]),
-                "std": float(std_map[time_index, lat_index, lon_index]),
-                "lower_percentile": float(lower_percentile_map[time_index, lat_index, lon_index]),
-                "upper_percentile": float(upper_percentile_map[time_index, lat_index, lon_index]),
+                "mean": float(mean_map[idx]),
+                "std": float(std_map[idx]),
+                "lower_percentile": float(lower_percentile_map[idx]),
+                "upper_percentile": float(upper_percentile_map[idx]),
                 "lower_percentile_value": lower_percentile,
                 "upper_percentile_value": upper_percentile,
                 "provenance_status": determine_cell_status(
@@ -151,8 +163,8 @@ def determine_cell_status(
     The label refers to the explicit gap-filling stages on the final working
     grid, not to whether the target-grid cell was a direct raw observation.
     """
-    raw_support_value = raw_observation_support.values[time_index, lat_index, lon_index]
-    post_value = post_interpolation_data.values[time_index, lat_index, lon_index]
+    raw_support_value = raw_observation_support.isel(time=time_index, lat=lat_index, lon=lon_index).item()
+    post_value = post_interpolation_data.isel(time=time_index, lat=lat_index, lon=lon_index).item()
 
     if np.isfinite(raw_support_value) and float(raw_support_value) > 0.0:
         return "supported_by_raw_observations"

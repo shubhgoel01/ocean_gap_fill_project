@@ -258,7 +258,8 @@ def to_annual_cycle(series: pd.Series | None) -> pd.Series | None:
         return None
     clean = series.sort_index()
     day_of_year = clean.index.dayofyear
-    annual = clean.groupby(day_of_year).mean()
+    annual_bin = ((day_of_year - 1) // 8) * 8 + 1
+    annual = clean.groupby(annual_bin).mean()
     annual.index = pd.Index(annual.index.astype(int), name="day_of_year")
     return annual
 

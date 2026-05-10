@@ -364,6 +364,9 @@ def build_pipeline_stage_arrays_for_validation(config, year: int) -> tuple[xr.Da
     loaded = load_chlorophyll_data(config)
     if is_preprocessing_regridded(loaded):
         regridded = loaded
+    elif not config.enable_regridding:
+        print("[filled-cell-validation] skipping rebuilt regrid because enable_regridding is false")
+        regridded = loaded
     else:
         regridded, _ = regrid_to_target_latlon(loaded, config, save_summary=False)
     interpolated = apply_ordered_interpolation(regridded, config, save_summary=False)

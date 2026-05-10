@@ -57,6 +57,7 @@ def run_full_dataset_monte_carlo(
             reconstructed_arrays,
             fit_result["cell"],
             sampled_values,
+            data_array,
         )
         # Now check if we were actually able to fill atleast one reconstructed_dataset for that cell value, then we mark it as resolved, otherwise we mark it as unresolved.
         if filled:
@@ -227,11 +228,18 @@ def write_samples_into_reconstructions(
     reconstructed_arrays: list[np.ndarray],
     cell: dict,
     sampled_values: np.ndarray,
+    data_array: xr.DataArray,
 ) -> bool:
     """Write one cell's simulated values into all reconstructed arrays."""
-    time_index = int(cell["time_index"])
-    lat_index = int(cell["lat_index"])
-    lon_index = int(cell["lon_index"])
+    time_axis = data_array.get_axis_num("time")
+    lat_axis = data_array.get_axis_num("lat")
+    lon_axis = data_array.get_axis_num("lon")
+
+    idx = [0] * data_array.ndim
+    idx[time_axis] = int(cell["time_index"])
+    idx[lat_axis] = int(cell["lat_index"])
+    idx[lon_axis] = int(cell["lon_index"])
+    idx = tuple(idx)
 
     wrote_any_value = False
     for simulation_index, array in enumerate(reconstructed_arrays):
@@ -242,7 +250,7 @@ def write_samples_into_reconstructions(
         if not np.isfinite(sampled_value):
             continue
 
-        array[time_index, lat_index, lon_index] = float(sampled_value)
+        array[idx] = float(sampled_value)
         wrote_any_value = True
 
     return wrote_any_value

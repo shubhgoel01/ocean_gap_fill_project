@@ -276,7 +276,7 @@ def composite_consecutive_windows(
     window_size: int = 8,
     min_valid_fraction: float = 0.6,
 ) -> xr.DataArray | xr.Dataset:
-    """Average consecutive time windows with a minimum valid-observation rule."""
+    """Average consecutive time windows within each calendar year."""
     if time_dim not in data.dims:
         raise ValueError(
             f"Cannot composite data without '{time_dim}' dimension. "
@@ -292,6 +292,45 @@ def composite_consecutive_windows(
         return data
 
     min_valid_count = int(math.ceil(window_size * min_valid_fraction))
+    time_values = pd.to_datetime(data[time_dim].values)
+    years = pd.Index(time_values.year).unique()
+    yearly_composites = []
+    for year in years:
+        year_mask = time_values.year == int(year)
+        year_data = data.isel({time_dim: year_mask})
+        yearly_composites.append(
+            composite_consecutive_block(
+                year_data,
+                time_dim=time_dim,
+                window_size=window_size,
+                min_valid_count=min_valid_count,
+            )
+        )
+
+    composite = xr.concat(yearly_composites, dim=time_dim).sortby(time_dim)
+    composite.attrs.update(data.attrs)
+    composite.attrs["composite_window_size"] = window_size
+    composite.attrs["composite_min_valid_fraction"] = min_valid_fraction
+    composite.attrs["composite_min_valid_count"] = min_valid_count
+    composite.attrs["composite_time_label"] = "first day in each same-year consecutive window"
+    composite.attrs["composite_year_boundary"] = "windows reset at each calendar year"
+
+    print(
+        f"Applied {window_size}-day compositing within each calendar year with minimum "
+        f"{min_valid_count}/{window_size} valid observations; "
+        f"time steps: {time_size} -> {composite.sizes[time_dim]}"
+    )
+    return composite
+
+
+def composite_consecutive_block(
+    data: xr.DataArray | xr.Dataset,
+    time_dim: str,
+    window_size: int,
+    min_valid_count: int,
+) -> xr.DataArray | xr.Dataset:
+    """Average one same-year block of consecutive time windows."""
+    time_size = int(data.sizes[time_dim])
     window_ids = xr.DataArray(
         np.arange(time_size) // window_size,
         dims=time_dim,
@@ -310,17 +349,6 @@ def composite_consecutive_windows(
     ]
     composite = composite.rename({"composite_window": time_dim})
     composite = composite.assign_coords({time_dim: composite_times})
-    composite.attrs.update(data.attrs)
-    composite.attrs["composite_window_size"] = window_size
-    composite.attrs["composite_min_valid_fraction"] = min_valid_fraction
-    composite.attrs["composite_min_valid_count"] = min_valid_count
-    composite.attrs["composite_time_label"] = "first day in each consecutive window"
-
-    print(
-        f"Applied {window_size}-day compositing with minimum "
-        f"{min_valid_count}/{window_size} valid observations; "
-        f"time steps: {time_size} -> {composite.sizes[time_dim]}"
-    )
     return composite
 
 

@@ -49,24 +49,32 @@ def preprocess_data(config_path: Path, output_path: Path | None = None, overwrit
         if config.enable_8day_compositing
         else "8-day compositing skipped"
     )
-    log_preprocessing_step(
-        f"Regridding to {config.target_grid_resolution}-degree latitude-longitude grid"
-    )
-    chlorophyll, regrid_summary = regrid_to_target_latlon(
-        chlorophyll,
-        config,
-        save_summary=False,
-    )
-    inspection_logger.record_stage(chlorophyll, "spatial_regridding")
+    if config.enable_regridding:
+        log_preprocessing_step(
+            f"Regridding to {config.target_grid_resolution}-degree latitude-longitude grid"
+        )
+        chlorophyll, regrid_summary = regrid_to_target_latlon(
+            chlorophyll,
+            config,
+            save_summary=False,
+        )
+        inspection_logger.record_stage(chlorophyll, "spatial_regridding")
+        regrid_note = f"regridded to {config.target_grid_resolution}-degree lat-lon resolution"
+    else:
+        log_preprocessing_step("Skipping spatial regridding because enable_regridding is false")
+        regrid_summary = {"status": "skipped", "reason": "enable_regridding is false"}
+        inspection_logger.record_stage(chlorophyll, "spatial_regridding_skipped")
+        regrid_note = "spatial regridding skipped"
     log_preprocessing_step("Attaching preprocessing metadata")
-    chlorophyll.attrs["preprocessing_regridded"] = "true"
-    chlorophyll.attrs["preprocessing_target_grid_resolution"] = float(
-        config.target_grid_resolution
-    )
+    chlorophyll.attrs["preprocessing_regridded"] = str(bool(config.enable_regridding)).lower()
+    if config.enable_regridding:
+        chlorophyll.attrs["preprocessing_target_grid_resolution"] = float(
+            config.target_grid_resolution
+        )
     chlorophyll.attrs["preprocessing_regrid_summary"] = json.dumps(regrid_summary)
     chlorophyll.attrs["preprocessing_note"] = (
         f"Merged source files, {crop_note}, {composite_note}, "
-        f"and regridded to {config.target_grid_resolution}-degree lat-lon resolution."
+        f"and {regrid_note}."
     )
     chlorophyll.attrs["source_input_directory"] = str(config.input_directory)
 

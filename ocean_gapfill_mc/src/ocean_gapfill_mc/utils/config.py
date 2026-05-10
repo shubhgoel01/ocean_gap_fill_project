@@ -29,6 +29,7 @@ class AppConfig:
     composite_window_size: int = 8
     composite_min_valid_fraction: float = 0.6
     preprocessed_data_file: Path | None = None
+    enable_regridding: bool = True
     target_grid_resolution: float = 1.0
     random_seed: int = 42
     sampled_cell_count: int = 5
@@ -205,6 +206,7 @@ def validate_config(raw_config: dict, config_path: Path | None = None) -> AppCon
     _validate_study_area_bounds(config.study_area_bounds)
     _validate_bool(config.enable_study_area_crop, "enable_study_area_crop")
     _validate_bool(config.enable_8day_compositing, "enable_8day_compositing")
+    _validate_bool(config.enable_regridding, "enable_regridding")
     if config.composite_window_size <= 0:
         raise ValueError("composite_window_size must be a positive integer.")
     if not 0.0 < config.composite_min_valid_fraction <= 1.0:

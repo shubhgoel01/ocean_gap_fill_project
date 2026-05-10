@@ -94,9 +94,13 @@ def find_missing_cells(data_array: xr.DataArray) -> list[dict]:
 #   "lon_value": actual_lon
 # }
 def build_cell_record(data_array: xr.DataArray, index_triplet: np.ndarray) -> dict:
-    time_index = int(index_triplet[0])
-    lat_index = int(index_triplet[1])
-    lon_index = int(index_triplet[2])
+    time_axis = data_array.get_axis_num("time")
+    lat_axis = data_array.get_axis_num("lat")
+    lon_axis = data_array.get_axis_num("lon")
+
+    time_index = int(index_triplet[time_axis])
+    lat_index = int(index_triplet[lat_axis])
+    lon_index = int(index_triplet[lon_axis])
 
     return {
         "time_index": time_index,

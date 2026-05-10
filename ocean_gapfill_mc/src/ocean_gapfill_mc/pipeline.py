@@ -173,6 +173,12 @@ def run_pipeline(config_path: Path) -> None:
             regridded,
             "preprocessed regridded data",
         )
+    elif not config.enable_regridding:
+        logger.info("Step 2/13: skipping spatial regridding because enable_regridding is false")
+        regridded = dataset
+        regridded_support = raw_observation_support
+        regrid_summary = {"status": "skipped", "reason": "enable_regridding is false"}
+        regrid_nan_summary = log_nan_stage(logger, regridded, "spatial regridding skipped")
     else:
         logger.info(
             "Step 2/13: regridding to %.3f-degree latitude-longitude grid",
