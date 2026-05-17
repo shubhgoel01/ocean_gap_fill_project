@@ -15,7 +15,7 @@ from .distribution_fit import (
     extract_selected_fit_results,
     fit_all_missing_cell_distributions,
 )
-from .fill_stage import save_fill_stage_map
+
 from .inspect_dataset import inspect_phase1_dataset
 from .interpolation import apply_ordered_interpolation
 from .monte_carlo import (
@@ -134,8 +134,9 @@ def run_output_script(config, script_name: str, function_name: str) -> dict:
 def run_pipeline(config_path: Path) -> None:
     """Run the full pipeline using the provided configuration."""
     config = load_config(config_path)                                   # All configurations are loaded
-    ensure_directories(config.output_directories())                     # All output directories are created if they don't exist
-    configure_logging(config.logs_dir)                                  # Logging is set up to write to the logs directory
+    if config.generate_outputs_and_logs:
+        ensure_directories(config.output_directories())                     # All output directories are created if they don't exist
+    configure_logging(config.logs_dir, enable_file_logging=config.generate_outputs_and_logs)                                  # Logging is set up to write to the logs directory
     logger = get_logger(__name__)
     random.seed(config.random_seed)                                     # Fixes random_seed, we are using monte carlo that genertaes points randomly, so for reproducibility we set the seed.
     np.random.seed(config.random_seed)
@@ -253,12 +254,7 @@ def run_pipeline(config_path: Path) -> None:
         reconstructed[0],
         config,
     )
-    fill_stage_map_path = save_fill_stage_map(
-        regridded,
-        interpolated,
-        reconstructed[0],
-        config.reconstructed_dir,
-    )
+
 
 # Extracts the fit-results for the selected cells without writing metric tables.
 
@@ -302,31 +298,38 @@ def run_pipeline(config_path: Path) -> None:
         "final reconstruction",
     )
 
-    logger.info("Step 12/13: saving logs and reports")
-    dataset_paths = save_pipeline_chlorophyll_datasets(
-        raw_data=dataset,
-        reconstructed_datasets=reconstructed,
-        config=config,
-    )
-    plot_paths = generate_pipeline_plots(
-        raw_data=dataset,
-        regridded_data=regridded,
-        interpolated_data=interpolated,
-        reconstructed_datasets=reconstructed,
-        nan_stage_summaries=[
-            raw_nan_summary,
-            regrid_nan_summary,
-            interpolation_nan_summary,
-            final_reconstruction_nan_summary,
-        ],
-        interpolation_summary=interpolation_summary,
-        fit_summary=fit_summary,
-        selected_fit_results=selected_fit_results,
-        selected_uncertainty_summary=uncertainty["selected_cell_summary"],
-        config=config,
-    )
-    annual_cycle_paths = generate_annual_cycle_plots_from_script(config)
-    bloom_paths = generate_bloom_detection_from_script(config)
+    if config.generate_outputs_and_logs:
+        logger.info("Step 12/13: saving logs and reports")
+        dataset_paths = save_pipeline_chlorophyll_datasets(
+            raw_data=dataset,
+            reconstructed_datasets=reconstructed,
+            config=config,
+        )
+        plot_paths = generate_pipeline_plots(
+            raw_data=dataset,
+            regridded_data=regridded,
+            interpolated_data=interpolated,
+            reconstructed_datasets=reconstructed,
+            nan_stage_summaries=[
+                raw_nan_summary,
+                regrid_nan_summary,
+                interpolation_nan_summary,
+                final_reconstruction_nan_summary,
+            ],
+            interpolation_summary=interpolation_summary,
+            fit_summary=fit_summary,
+            selected_fit_results=selected_fit_results,
+            selected_uncertainty_summary=uncertainty["selected_cell_summary"],
+            config=config,
+        )
+        annual_cycle_paths = generate_annual_cycle_plots_from_script(config)
+        bloom_paths = generate_bloom_detection_from_script(config)
+    else:
+        logger.info("Step 12/13: skipping outputs and reports saving as requested")
+        dataset_paths = {}
+        plot_paths = []
+        annual_cycle_paths = {}
+        bloom_paths = {}
     logger.info("Initial dataset baseline summary: %s", initial_stats)
     logger.info("Raw-load NaN summary: %s", raw_nan_summary)
     logger.info("Inspection summary after regridding: %s", before_stats)
@@ -340,7 +343,7 @@ def run_pipeline(config_path: Path) -> None:
     logger.info("Selected-cell distribution fitting results: %s", selected_fit_results)
     logger.info("Monte Carlo reconstruction summary: %s", monte_carlo_summary)
     logger.info("Monte Carlo unresolved cell count: %s", len(monte_carlo_unresolved))
-    logger.info("Fill-stage provenance map: %s", fill_stage_map_path)
+
     logger.info("Selected-cell Monte Carlo summaries: %s", selected_monte_carlo_summaries)
     logger.info("Uncertainty summary: %s", uncertainty["summary"])
     logger.info("Selected-cell uncertainty summary: %s", uncertainty["selected_cell_summary"])

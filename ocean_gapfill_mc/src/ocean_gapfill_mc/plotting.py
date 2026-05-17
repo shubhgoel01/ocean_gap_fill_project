@@ -43,16 +43,10 @@ def generate_pipeline_plots(
     """Create all standard pipeline plots and return their output paths."""
     missing_percentage_dir = Path(config.missing_percentage_dir)
     diagnostics_dir = Path(config.pipeline_diagnostics_dir)
-    chlorophyll_maps_dir = Path(config.chlorophyll_maps_dir)
-    for output_dir in (missing_percentage_dir, diagnostics_dir, chlorophyll_maps_dir):
+    for output_dir in (missing_percentage_dir, diagnostics_dir):
         output_dir.mkdir(parents=True, exist_ok=True)
 
     final_mean_reconstruction = build_reconstruction_mean(reconstructed_datasets)
-    shared_chlorophyll_vmax = compute_shared_chlorophyll_vmax(
-        raw_data,
-        final_mean_reconstruction,
-        config,
-    )
     saved_paths = {
         "missing_percentage_raw": str(
             plot_missing_percentage_map(
@@ -96,24 +90,6 @@ def generate_pipeline_plots(
                 diagnostics_dir / "probability_model_counts.png",
             )
         ),
-        "raw_chlorophyll_mean": str(
-            plot_chlorophyll_mean_map(
-                raw_data,
-                "Satellite-Derived Chlorophyll",
-                chlorophyll_maps_dir / "satellite_derived_raw_mean_chlorophyll.png",
-                config,
-                vmax=shared_chlorophyll_vmax,
-            )
-        ),
-        "final_reconstructed_mean_chlorophyll": str(
-            plot_chlorophyll_mean_map(
-                final_mean_reconstruction,
-                "Reconstructed Chlorophyll",
-                chlorophyll_maps_dir / "final_reconstructed_mean_chlorophyll.png",
-                config,
-                vmax=shared_chlorophyll_vmax,
-            )
-        ),
     }
     saved_paths.update(
         generate_selected_cell_fit_plots(
@@ -144,10 +120,6 @@ def save_pipeline_chlorophyll_datasets(
         raw_data,
         long_name="Satellite-derived mean chlorophyll concentration",
     )
-    final_reconstructed_mean = build_time_mean_chlorophyll(
-        final_reconstruction_ensemble_mean,
-        long_name="Final reconstructed mean chlorophyll concentration",
-    )
     final_reconstruction_ensemble_mean = prepare_chlorophyll_for_netcdf(
         final_reconstruction_ensemble_mean,
         long_name="Final reconstructed ensemble-mean chlorophyll concentration by time",
@@ -158,12 +130,6 @@ def save_pipeline_chlorophyll_datasets(
             save_data_array_as_dataset(
                 satellite_raw_mean,
                 output_dir / "satellite_derived_raw_mean_chlorophyll.nc",
-            )
-        ),
-        "final_reconstructed_mean_chlorophyll": str(
-            save_data_array_as_dataset(
-                final_reconstructed_mean,
-                output_dir / "final_reconstructed_mean_chlorophyll.nc",
             )
         ),
         "final_reconstructed_ensemble_mean_chlorophyll_by_time": str(
@@ -685,38 +651,6 @@ def plot_missing_percentage_map(
     )
 
 
-def plot_chlorophyll_mean_map(
-    data_array: xr.DataArray,
-    title: str,
-    output_path: Path,
-    config,
-    vmax: float | None = None,
-) -> Path:
-    mean_chlorophyll = data_array.mean(dim="time", skipna=True)
-    if vmax is None:
-        vmax = rounded_colorbar_max(
-            mean_chlorophyll,
-            fallback=1.0,
-            step=float(config.chlorophyll_colorbar_step),
-            percentile=float(config.chlorophyll_colorbar_percentile),
-        )
-    return plot_spatial_field(
-        mean_chlorophyll,
-        title,
-        output_path,
-        colorbar_label="Chlorophyll concentration (mg m$^{-3}$)",
-        cmap=MAP_COLORMAP,
-        vmin=0.0,
-        vmax=vmax,
-        extend="max",
-        metadata_text=build_map_metadata(
-            data_array,
-            "Map shows time-mean chlorophyll concentration.",
-        ),
-        map_tick_spacing=float(config.map_tick_spacing),
-    )
-
-
 def plot_spatial_field(
     field: xr.DataArray,
     title: str,
@@ -1085,26 +1019,3 @@ def rounded_colorbar_max(
     return max(rounded, step)
 
 
-def compute_shared_chlorophyll_vmax(
-    raw_data: xr.DataArray,
-    final_mean_reconstruction: xr.DataArray,
-    config,
-) -> float:
-    """Use one chlorophyll color scale for raw and reconstructed map comparison."""
-    raw_mean = raw_data.mean(dim="time", skipna=True)
-    reconstructed_mean = final_mean_reconstruction.mean(dim="time", skipna=True)
-    combined_values = np.concatenate(
-        [
-            np.asarray(raw_mean.values, dtype=float).ravel(),
-            np.asarray(reconstructed_mean.values, dtype=float).ravel(),
-        ]
-    )
-    finite_values = combined_values[np.isfinite(combined_values)]
-    if finite_values.size == 0:
-        return 1.0
-
-    high_value = float(np.nanpercentile(finite_values, float(config.chlorophyll_colorbar_percentile)))
-    if not np.isfinite(high_value) or high_value <= 0:
-        return 1.0
-    step = float(config.chlorophyll_colorbar_step)
-    return max(float(np.ceil(high_value / step) * step), step)

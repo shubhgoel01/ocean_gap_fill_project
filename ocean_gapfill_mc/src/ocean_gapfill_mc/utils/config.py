@@ -19,10 +19,7 @@ class AppConfig:
     output_directory: str
     raw_file_pattern: str | list[str] | tuple[str, ...] | None = None
     study_area_bounds: dict[str, float] | None = None
-    comparison_year: int | None = None
-    filled_data_directory: Path | None = None
-    filled_data_pattern: str | list[str] | tuple[str, ...] = "*.nc*"
-    filled_variable_name: str | None = None
+
     reconstructed_mean_data_file: Path | None = None
     enable_study_area_crop: bool = False
     enable_8day_compositing: bool = True
@@ -60,6 +57,14 @@ class AppConfig:
     bloom_threshold_percentile: float = 60.0
     bloom_detection_year: int | None = None
     save_reconstructed_datasets: bool = True
+    generate_outputs_and_logs: bool = True
+    uncertainty_dataset_path: Path | None = None
+    masking_f1_path: Path | None = None
+    masking_f2_path: Path | None = None
+    masking_output_path: Path | None = None
+    validation_target_data_path: Path | None = None
+    validation_input_data_path: Path | None = None
+    validation_year: int | None = None
     config_path: str | None = None
     config_directory: str | None = None
 
@@ -85,10 +90,6 @@ class AppConfig:
         return str(Path(self.output_directory) / "pre_processing")
 
     @property
-    def filled_data_comparison_dir(self) -> str:
-        return str(Path(self.output_directory) / "filled_data_comparison")
-
-    @property
     def bloom_dir(self) -> str:
         return str(Path(self.output_directory) / "bloom")
 
@@ -108,6 +109,10 @@ class AppConfig:
     def datasets_dir(self) -> str:
         return str(Path(self.output_directory) / "datasets")
 
+    @property
+    def validation_dir(self) -> str:
+        return str(Path(self.output_directory) / "validation")
+
     def output_directories(self) -> list[str]:
         return [
             self.output_directory,
@@ -116,12 +121,13 @@ class AppConfig:
             self.reconstructed_dir,
             self.annual_cycle_dir,
             self.pre_processing_dir,
-            self.filled_data_comparison_dir,
+
             self.bloom_dir,
             self.missing_percentage_dir,
             self.pipeline_diagnostics_dir,
             self.chlorophyll_maps_dir,
             self.datasets_dir,
+            self.validation_dir,
         ]
 
 
@@ -172,15 +178,7 @@ def validate_config(raw_config: dict, config_path: Path | None = None) -> AppCon
         )
     else:
         normalized_config["preprocessed_data_file"] = None
-    if normalized_config.get("filled_data_directory"):
-        normalized_config["filled_data_directory"] = _resolve_config_path(
-            normalized_config["filled_data_directory"],
-            config_base_dir,
-        )
-    else:
-        normalized_config["filled_data_directory"] = (
-            config_base_dir / "../data/filled_data"
-        ).resolve()
+
     if normalized_config.get("reconstructed_mean_data_file"):
         normalized_config["reconstructed_mean_data_file"] = _resolve_config_path(
             normalized_config["reconstructed_mean_data_file"],
@@ -188,6 +186,30 @@ def validate_config(raw_config: dict, config_path: Path | None = None) -> AppCon
         )
     else:
         normalized_config["reconstructed_mean_data_file"] = None
+
+    if normalized_config.get("uncertainty_dataset_path"):
+        normalized_config["uncertainty_dataset_path"] = _resolve_config_path(
+            normalized_config["uncertainty_dataset_path"],
+            config_base_dir,
+        )
+    else:
+        normalized_config["uncertainty_dataset_path"] = Path(normalized_config["output_directory"]) / "reconstructed" / "uncertainty_maps.nc"
+
+    optional_path_fields = [
+        "masking_f1_path",
+        "masking_f2_path",
+        "masking_output_path",
+        "validation_target_data_path",
+        "validation_input_data_path",
+    ]
+    for field_name in optional_path_fields:
+        if normalized_config.get(field_name):
+            normalized_config[field_name] = _resolve_config_path(
+                normalized_config[field_name],
+                config_base_dir,
+            )
+        else:
+            normalized_config[field_name] = None
 
     normalized_config["config_path"] = (
         str(Path(config_path).expanduser().resolve()) if config_path is not None else None
@@ -267,6 +289,7 @@ def validate_config(raw_config: dict, config_path: Path | None = None) -> AppCon
     if config.bloom_threshold_multiplier <= 0:
         raise ValueError("bloom_threshold_multiplier must be positive.")
     _validate_percentile(config.bloom_threshold_percentile, "bloom_threshold_percentile")
+    _validate_bool(config.generate_outputs_and_logs, "generate_outputs_and_logs")
 
     return config
 

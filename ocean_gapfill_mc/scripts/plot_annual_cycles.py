@@ -61,12 +61,6 @@ def find_existing_mean_datasets(config) -> dict[str, Path | None]:
                 reconstructed_dir / "reconstructed_mean_by_time.nc",
             ]
         ),
-        "reconstructed_mean_2d": first_existing(
-            [
-                datasets_dir / "final_reconstructed_mean_chlorophyll.nc",
-                datasets_dir / "reconstructed_mean_chlorophyll.nc",
-            ]
-        ),
         "climatology": first_matching(
             datasets_dir,
             [

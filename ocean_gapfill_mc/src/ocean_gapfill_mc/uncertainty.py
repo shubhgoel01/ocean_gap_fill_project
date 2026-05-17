@@ -184,9 +184,8 @@ def save_uncertainty_outputs(
     config,
 ) -> None:
     """Save full uncertainty maps as NetCDF without summary table files."""
-    reconstructed_dir = Path(config.reconstructed_dir)
-
-    reconstructed_dir.mkdir(parents=True, exist_ok=True)
+    uncertainty_dataset_path = Path(config.uncertainty_dataset_path)
+    uncertainty_dataset_path.parent.mkdir(parents=True, exist_ok=True)
 
     uncertainty_dataset = xr.Dataset(
         data_vars={
@@ -212,4 +211,4 @@ def save_uncertainty_outputs(
             ),
         }
     )
-    uncertainty_dataset.to_netcdf(reconstructed_dir / "uncertainty_maps.nc")
+    uncertainty_dataset.to_netcdf(uncertainty_dataset_path)
